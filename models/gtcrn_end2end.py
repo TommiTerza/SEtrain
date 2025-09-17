@@ -406,7 +406,7 @@ class Decoder(nn.Module):
                 GTConvBlock(width, width, (3, 3), stride=(1, 1), padding=(2 * 2, 1), dilation=(2, 1), use_deconv=True),
                 GTConvBlock(width, width, (3, 3), stride=(1, 1), padding=(2 * 1, 1), dilation=(1, 1), use_deconv=True),
                 ConvBlock(width, width, (1, 5), stride=(1, 2), padding=(0, 2), groups=2, use_deconv=True),
-                ConvBlock(width, output_channels, (1, 5), stride=(1, 2), padding=(0, 2), use_deconv=True, activation="sigmoid"),
+                ConvBlock(width, output_channels, (1, 5), stride=(1, 2), padding=(0, 2), use_deconv=True, activation=None),
             ]
         )
 
