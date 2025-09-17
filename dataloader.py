@@ -1,86 +1,177 @@
-from random import random
-import soundfile as sf
-import librosa
-import torch
-from torch.utils import data
-import numpy as np
 import random
+from pathlib import Path
+from typing import List, Tuple
 
-NOISY_DATABASE_TRAIN = '/data/ssd0/xiaobin.rong/Datasets/DNS3/train_noisy'
-NOISY_DATABASE_VALID = '/data/ssd0/xiaobin.rong/Datasets/DNS3/dev_noisy'
+import numpy as np
+import soundfile as sf
+import torch
+from datasets import Audio, load_dataset
+from tqdm import tqdm
 
-class DNS3Dataset(torch.utils.data.Dataset):
+VOICEBANK_DATASET_ID = "JacobLinCool/VoiceBank-DEMAND-16k"
+DEFAULT_DATA_ROOT = Path(__file__).resolve().parent / "data" / "voicebank-demand-16k"
+DEFAULT_FS = 16000
+
+
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _sanitize_id(identifier: str) -> str:
+    return str(identifier).replace("/", "_").replace("\\", "_")
+
+
+def _write_wav(path: Path, audio: np.ndarray, sr: int = DEFAULT_FS) -> None:
+    _ensure_dir(path.parent)
+    sf.write(path, audio.astype(np.float32), sr)
+
+
+def _export_split(ds, split_root: Path, *, desc: str) -> None:
+    noisy_dir = split_root / "noisy"
+    clean_dir = split_root / "clean"
+    _ensure_dir(noisy_dir)
+    _ensure_dir(clean_dir)
+
+    for example in tqdm(ds, desc=desc, unit="file"):
+        sid = _sanitize_id(example.get("id", "sample"))
+        noisy_path = noisy_dir / f"{sid}.wav"
+        clean_path = clean_dir / f"{sid}.wav"
+        if noisy_path.exists() and clean_path.exists():
+            continue
+        noisy = np.asarray(example["noisy"]["array"], dtype=np.float32)
+        clean = np.asarray(example["clean"]["array"], dtype=np.float32)
+        _write_wav(noisy_path, noisy)
+        _write_wav(clean_path, clean)
+
+
+def prepare_voicebank_dataset(root: Path) -> None:
+    root = root.expanduser().resolve()
+    train_noisy = root / "train" / "noisy"
+    valid_noisy = root / "valid" / "noisy"
+    if train_noisy.exists() and valid_noisy.exists() and any(train_noisy.glob("*.wav")) and any(valid_noisy.glob("*.wav")):
+        return
+
+    print(f"Preparing VoiceBank-DEMAND dataset in {root} ...")
+    ds_train = load_dataset(VOICEBANK_DATASET_ID, split="train")
+    ds_test = load_dataset(VOICEBANK_DATASET_ID, split="test")
+
+    audio_feature = Audio(sampling_rate=DEFAULT_FS)
+    ds_train = ds_train.cast_column("noisy", audio_feature)
+    ds_train = ds_train.cast_column("clean", audio_feature)
+    ds_test = ds_test.cast_column("noisy", audio_feature)
+    ds_test = ds_test.cast_column("clean", audio_feature)
+
+    _export_split(ds_train, root / "train", desc="VoiceBank train")
+    _export_split(ds_test, root / "valid", desc="VoiceBank valid")
+    print("VoiceBank-DEMAND preparation complete.")
+
+
+class VoiceBankDemandDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        fs=16000,
-        length_in_seconds=8,
-        num_data_tot=720000,
-        num_data_per_epoch=40000,
-        random_start_point=False,
-        train=True
+        fs: int = DEFAULT_FS,
+        length_in_seconds: float = 10.0,
+        num_data_tot: int = -1,
+        num_data_per_epoch: int = -1,
+        random_start_point: bool = True,
+        train: bool = True,
+        dataset_root: Path | None = None,
     ):
-        if train:
-            print("You are using this DNS3 training data:", NOISY_DATABASE_TRAIN)
-        else:
-            print("You are using this DNS3 validation data:", NOISY_DATABASE_VALID)
-        self.noisy_database_train = sorted(librosa.util.find_files(NOISY_DATABASE_TRAIN, ext='wav'))[:num_data_tot]
-        self.noisy_database_valid = sorted(librosa.util.find_files(NOISY_DATABASE_VALID, ext='wav'))
-        self.L = int(length_in_seconds * fs)
-        self.random_start_point = random_start_point
         self.fs = fs
         self.length_in_seconds = length_in_seconds
-        self.num_data_per_epoch = num_data_per_epoch
+        self.L = int(round(length_in_seconds * fs))
+        self.random_start_point = random_start_point
         self.train = train
-        
-    def sample_data_per_epoch(self):
-        self.noisy_data_train = random.sample(self.noisy_database_train, self.num_data_per_epoch)
+        self.dataset_root = Path(dataset_root) if dataset_root is not None else DEFAULT_DATA_ROOT
 
-    def __getitem__(self, idx):
+        prepare_voicebank_dataset(self.dataset_root)
+
+        split = "train" if train else "valid"
+        noisy_dir = self.dataset_root / split / "noisy"
+        clean_dir = self.dataset_root / split / "clean"
+
+        noisy_paths = {p.stem: p for p in sorted(noisy_dir.glob("*.wav"))}
+        clean_paths = {p.stem: p for p in sorted(clean_dir.glob("*.wav"))}
+        keys = sorted(set(noisy_paths) & set(clean_paths))
+
+        if num_data_tot is not None and num_data_tot > 0:
+            keys = keys[: min(num_data_tot, len(keys))]
+
+        self.examples: List[Tuple[Path, Path]] = [(noisy_paths[k], clean_paths[k]) for k in keys]
+        if not self.examples:
+            raise RuntimeError(f"No paired files found in {noisy_dir} and {clean_dir}")
+
+        self.num_data_per_epoch = num_data_per_epoch if num_data_per_epoch and num_data_per_epoch > 0 else len(self.examples)
+        self.indices: List[int] = list(range(len(self.examples)))
         if self.train:
-            noisy_list = self.noisy_data_train
-        else:
-            noisy_list = self.noisy_database_valid
+            self.sample_data_per_epoch()
 
-        if self.random_start_point:
-            Begin_S = int(np.random.uniform(0, 10 - self.length_in_seconds)) * self.fs
-            noisy, _ = sf.read(noisy_list[idx], dtype='float32',start= Begin_S,stop = Begin_S + self.L)
-            clean, _ = sf.read(noisy_list[idx].replace('noisy', 'clean'), dtype='float32',start=Begin_S, stop=Begin_S + self.L)
+    def sample_data_per_epoch(self) -> None:
+        count = min(self.num_data_per_epoch, len(self.examples))
+        self.indices = random.sample(range(len(self.examples)), count)
 
+    def _crop_or_pad(self, audio: np.ndarray) -> np.ndarray:
+        length = audio.shape[0]
+        if length >= self.L:
+            if self.train and self.random_start_point and length > self.L:
+                start = random.randint(0, length - self.L)
+            elif self.train:
+                start = 0
+            else:
+                start = (length - self.L) // 2
+            return audio[start : start + self.L]
+
+        pad_needed = self.L - length
+        if self.train and self.random_start_point:
+            pad_left = random.randint(0, pad_needed)
         else:
-            noisy, _ = sf.read(noisy_list[idx], dtype='float32',start= 0, stop = self.L) 
-            clean, _ = sf.read(noisy_list[idx].replace('noisy', 'clean'), dtype='float32', start=0, stop=self.L)
+            pad_left = pad_needed // 2
+        pad_right = pad_needed - pad_left
+        return np.pad(audio, (pad_left, pad_right), mode="constant")
+
+    def __getitem__(self, idx: int):
+        if self.train:
+            example_idx = self.indices[idx]
+        else:
+            example_idx = idx
+
+        noisy_path, clean_path = self.examples[example_idx]
+        noisy, _ = sf.read(noisy_path, dtype="float32")
+        clean, _ = sf.read(clean_path, dtype="float32")
+
+        noisy = self._crop_or_pad(noisy.astype(np.float32))
+        clean = self._crop_or_pad(clean.astype(np.float32))
 
         return noisy, clean
 
-    def __len__(self):
+    def __len__(self) -> int:
         if self.train:
-            return self.num_data_per_epoch
-        else:
-            return len(self.noisy_database_valid)
+            return len(self.indices)
+        return len(self.examples)
 
 
-if __name__=='__main__':
-    from tqdm import tqdm 
+DNS3Dataset = VoiceBankDemandDataset
+
+
+if __name__ == "__main__":
+    from torch.utils import data
     from omegaconf import OmegaConf
-    
-    config = OmegaConf.load('configs/cfg_train.yaml')
 
-        
-    train_dataset = DNS3Dataset(**config['train_dataset'])
-    train_dataloader = data.DataLoader(train_dataset, **config['train_dataloader'])
+    config = OmegaConf.load("configs/cfg_train.yaml")
+
+    train_dataset = VoiceBankDemandDataset(**config["train_dataset"])
+    train_dataloader = data.DataLoader(train_dataset, **config["train_dataloader"])
     train_dataloader.dataset.sample_data_per_epoch()
 
-    validation_dataset = DNS3Dataset(**config['validation_dataset'])
-    validation_dataloader = data.DataLoader(validation_dataset, **config['validation_dataloader'])
+    validation_dataset = VoiceBankDemandDataset(**config["validation_dataset"])
+    validation_dataloader = data.DataLoader(validation_dataset, **config["validation_dataloader"])
 
     print(len(train_dataloader), len(validation_dataloader))
 
-    for noisy, clean in tqdm(train_dataloader):
+    for noisy, clean in train_dataloader:
         print(noisy.shape, clean.shape)
         break
-        # pass
 
-    for noisy, clean in tqdm(validation_dataloader):
+    for noisy, clean in validation_dataloader:
         print(noisy.shape, clean.shape)
         break
-        # pass
