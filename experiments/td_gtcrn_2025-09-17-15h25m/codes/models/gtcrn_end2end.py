@@ -187,21 +187,8 @@ class ConvBlock(nn.Module):
         activation: Optional[str] = "prelu",
     ) -> None:
         super().__init__()
-        if use_deconv:
-            conv_module = nn.ConvTranspose2d
-            output_padding = tuple(max(s - 1, 0) for s in stride)
-            self.conv = conv_module(
-                in_channels,
-                out_channels,
-                kernel_size,
-                stride,
-                padding,
-                output_padding=output_padding,
-                groups=groups,
-            )
-        else:
-            conv_module = nn.Conv2d
-            self.conv = conv_module(in_channels, out_channels, kernel_size, stride, padding, groups=groups)
+        conv_module = nn.ConvTranspose2d if use_deconv else nn.Conv2d
+        self.conv = conv_module(in_channels, out_channels, kernel_size, stride, padding, groups=groups)
         self.norm = CausalLayerNorm2d(out_channels)
         self.act = _activation(activation)
 
@@ -226,38 +213,15 @@ class GTConvBlock(nn.Module):
     ) -> None:
         super().__init__()
         self.pad_size = (kernel_size[0] - 1) * dilation[0]
-
-        def build_conv(in_channels: int, out_channels: int, kernel: Tuple[int, int], stride: Tuple[int, int] = (1, 1),
-                       padding: Tuple[int, int] = (0, 0), dilation: Tuple[int, int] = (1, 1), groups: int = 1) -> nn.Module:
-            if use_deconv:
-                output_padding = tuple(max(s - 1, 0) for s in stride)
-                return nn.ConvTranspose2d(
-                    in_channels,
-                    out_channels,
-                    kernel,
-                    stride=stride,
-                    padding=padding,
-                    dilation=dilation,
-                    groups=groups,
-                    output_padding=output_padding,
-                )
-            return nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-                groups=groups,
-            )
+        conv_module = nn.ConvTranspose2d if use_deconv else nn.Conv2d
 
         self.sfe = SFE(kernel_size=3, stride=1)
 
-        self.point_conv1 = build_conv(in_channels // 2 * 3, hidden_channels, (1, 1))
+        self.point_conv1 = conv_module(in_channels // 2 * 3, hidden_channels, 1)
         self.point_norm1 = CausalLayerNorm2d(hidden_channels)
         self.point_act = nn.PReLU()
 
-        self.depth_conv = build_conv(
+        self.depth_conv = conv_module(
             hidden_channels,
             hidden_channels,
             kernel_size,
@@ -269,7 +233,7 @@ class GTConvBlock(nn.Module):
         self.depth_norm = CausalLayerNorm2d(hidden_channels)
         self.depth_act = nn.PReLU()
 
-        self.point_conv2 = build_conv(hidden_channels, in_channels // 2, (1, 1))
+        self.point_conv2 = conv_module(hidden_channels, in_channels // 2, 1)
         self.point_norm2 = CausalLayerNorm2d(in_channels // 2)
 
         self.tra = TRA(in_channels // 2)

@@ -1,10 +1,10 @@
-test_dataset: 
-  noisy_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_noisy/
-  clean_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_clean/
+test_dataset:
+  noisy_dir: data/voicebank-demand-16k/valid/noisy
+  clean_dir: data/voicebank-demand-16k/valid/clean
 
 network:
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn_2025-03-31-11h26m
-  config: ${network.exp_path}/config.yaml
+  config: configs/cfg_train.yaml
+  checkpoint: experiments/td_gtcrn/checkpoints/model_001.tar
+  enh_folder: runs/infer_outputs
   ckpt_name: model_001
-  checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced
+  exp_path: experiments/td_gtcrn

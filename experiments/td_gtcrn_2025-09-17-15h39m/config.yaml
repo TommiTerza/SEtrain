@@ -5,69 +5,58 @@ network_config:
     stride: 32
     activation: softplus
     mask_activation: sigmoid
-
 DDP:
-  world_size: 2
-
+  world_size: 1
 optimizer:
   lr: 0.001
-
 scheduler:
   kwargs:
     warmup_steps: 25000
     decay_until_step: 250000
-    max_lr: 1e-3
-    min_lr: 1e-6
-
-  update_interval: step  # [step, epoch]
-
+    max_lr: 0.001
+    min_lr: 1.0e-06
+  update_interval: step
 loss:
   si_snr_weight: 1.0
   mag_weight: 0.1
   complex_weight: 0.1
   mrstft:
-    - n_fft: 2048
-      hop_length: 240
-      win_length: 1200
-      window: hann_window
-    - n_fft: 1024
-      hop_length: 120
-      win_length: 600
-      window: hann_window
-    - n_fft: 512
-      hop_length: 50
-      win_length: 240
-      window: hann_window
-
-train_dataset: 
+  - n_fft: 2048
+    hop_length: 240
+    win_length: 1200
+    window: hann_window
+  - n_fft: 1024
+    hop_length: 120
+    win_length: 600
+    window: hann_window
+  - n_fft: 512
+    hop_length: 50
+    win_length: 240
+    window: hann_window
+train_dataset:
   length_in_seconds: 10
-  num_data_tot: 72000  # 200 h
+  num_data_tot: 72000
   num_data_per_epoch: 10000
-  random_start_point: False
-  train: True
-
-train_dataloader: 
+  random_start_point: false
+  train: true
+train_dataloader:
   batch_size: 2
   num_workers: 4
-  drop_last: True
-  pin_memory: True
-
-validation_dataset: 
+  drop_last: true
+  pin_memory: true
+validation_dataset:
   length_in_seconds: 10
-  random_start_point: False
-  train: False
-
+  random_start_point: false
+  train: false
 validation_dataloader:
   batch_size: 4
   num_workers: 4
-  pin_memory: True
-
+  pin_memory: true
 samplerate: 16000
-
 trainer:
   epochs: 200
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
   exp_path: experiments/td_gtcrn
-  resume: False
+  resume: false
   resume_datetime: 2024-12-31-14h28m
