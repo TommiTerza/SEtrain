@@ -275,6 +275,10 @@ class Mask(nn.Module):
 
 
 class GTCRN(nn.Module):
+    BASE_NFFT = 512
+    BASE_LOW_BINS = 65
+    BASE_HIGH_BANDS = 64
+
     def __init__(
         self,
         n_fft=512,
@@ -285,8 +289,9 @@ class GTCRN(nn.Module):
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
-        
-        self.erb = ERB(65, 64)
+
+        erb_low, erb_high = self._compute_erb_subbands(self.n_fft)
+        self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
         self.sfe = SFE(3, 1)
 
         self.encoder = Encoder()
@@ -314,17 +319,17 @@ class GTCRN(nn.Module):
         spec_real = spec[..., 0].permute(0,2,1)
         spec_imag = spec[..., 1].permute(0,2,1)
         spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
-        feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,257)
+        feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,F)
         
         spec = spec.permute(0,3,2,1)  # (B,2,T,F)
 
-        feat = self.erb.bm(feat)  # (B,3,T,129)
-        feat = self.sfe(feat)     # (B,9,T,129)
+        feat = self.erb.bm(feat)
+        feat = self.sfe(feat)
 
         feat, en_outs = self.encoder(feat)
         
-        feat = self.dpgrnn1(feat) # (B,16,T,33)
-        feat = self.dpgrnn2(feat) # (B,16,T,33)
+        feat = self.dpgrnn1(feat)
+        feat = self.dpgrnn2(feat)
 
         m_feat = self.decoder(feat, en_outs)
         
@@ -338,6 +343,26 @@ class GTCRN(nn.Module):
         output = torch.nn.functional.pad(output, (0, n_samples-output.shape[1]))
         
         return output
+
+    @classmethod
+    def _compute_erb_subbands(cls, n_fft):
+        base_nfreqs = cls.BASE_NFFT // 2 + 1
+        low_ratio = cls.BASE_LOW_BINS / base_nfreqs
+        high_ratio = cls.BASE_HIGH_BANDS / max(base_nfreqs - cls.BASE_LOW_BINS, 1)
+
+        nfreqs = n_fft // 2 + 1
+        if nfreqs < 3:
+            raise ValueError(f"n_fft={n_fft} is too small to build ERB filters")
+
+        erb_low = int(round(nfreqs * low_ratio))
+        # keep at least two bins for the ERB mapping and one bin below the split
+        erb_low = max(1, min(erb_low, nfreqs - 2))
+
+        remaining_bins = nfreqs - erb_low
+        erb_high = int(round(remaining_bins * high_ratio))
+        erb_high = max(2, min(erb_high, remaining_bins))
+
+        return erb_low, erb_high
 
 
 if __name__ == "__main__":
