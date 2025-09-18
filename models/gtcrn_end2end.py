@@ -14,6 +14,7 @@ class ERB(nn.Module):
         erb_filters = self.erb_filter_banks(erb_subband_1, erb_subband_2, nfft, high_lim, fs)
         nfreqs = nfft//2 + 1
         self.erb_subband_1 = erb_subband_1
+        self.output_bins = erb_subband_1 + erb_subband_2
         self.erb_fc = nn.Linear(nfreqs-erb_subband_1, erb_subband_2, bias=False)
         self.ierb_fc = nn.Linear(erb_subband_2, nfreqs-erb_subband_1, bias=False)
         self.erb_fc.weight = nn.Parameter(erb_filters, requires_grad=False)
@@ -97,11 +98,16 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, groups=1, use_deconv=False, is_last=False):
         super().__init__()
         conv_module = nn.ConvTranspose2d if use_deconv else nn.Conv2d
+        self.use_deconv = use_deconv
         self.conv = conv_module(in_channels, out_channels, kernel_size, stride, padding, groups=groups)
         self.bn = nn.BatchNorm2d(out_channels)
         self.act = nn.Tanh() if is_last else nn.PReLU()
-    def forward(self, x):
-        return self.act(self.bn(self.conv(x)))
+    def forward(self, x, output_size=None):
+        if self.use_deconv and output_size is not None:
+            x = self.conv(x, output_size=output_size)
+        else:
+            x = self.conv(x)
+        return self.act(self.bn(x))
 
 
 class GTConvBlock(nn.Module):
@@ -255,10 +261,43 @@ class Decoder(nn.Module):
             ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=True)
         ])
 
-    def forward(self, x, en_outs):
+    def forward(self, x, en_outs, final_freq):
         N_layers = len(self.de_convs)
         for i in range(N_layers):
-            x = self.de_convs[i](x + en_outs[N_layers-1-i])
+            skip = en_outs[N_layers-1-i]
+            x = self._match_spatial_dims(x, skip)
+            x = x + skip
+
+            module = self.de_convs[i]
+            output_size = None
+            if isinstance(module, ConvBlock) and module.use_deconv:
+                if i < N_layers - 1:
+                    target_freq = en_outs[N_layers-2-i].shape[-1]
+                else:
+                    target_freq = final_freq
+                target_time = x.shape[2]
+                output_size = (x.shape[0], module.conv.out_channels, target_time, target_freq)
+            if isinstance(module, ConvBlock):
+                x = module(x, output_size=output_size)
+            else:
+                x = module(x)
+        return x
+
+    @staticmethod
+    def _match_spatial_dims(x, ref):
+        t_diff = ref.shape[-2] - x.shape[-2]
+        f_diff = ref.shape[-1] - x.shape[-1]
+
+        if t_diff < 0:
+            x = x[..., :ref.shape[-2], :]
+        elif t_diff > 0:
+            x = nn.functional.pad(x, (0, 0, 0, t_diff))
+
+        if f_diff < 0:
+            x = x[..., :, :ref.shape[-1]]
+        elif f_diff > 0:
+            x = nn.functional.pad(x, (0, f_diff, 0, 0))
+
         return x
     
 
@@ -295,9 +334,10 @@ class GTCRN(nn.Module):
         self.sfe = SFE(3, 1)
 
         self.encoder = Encoder()
-        
-        self.dpgrnn1 = DPGRNN(16, 33, 16)
-        self.dpgrnn2 = DPGRNN(16, 33, 16)
+        encoder_width = self._compute_encoder_width(self.erb.output_bins)
+
+        self.dpgrnn1 = DPGRNN(16, encoder_width, 16)
+        self.dpgrnn2 = DPGRNN(16, encoder_width, 16)
         
         self.decoder = Decoder()
 
@@ -331,7 +371,7 @@ class GTCRN(nn.Module):
         feat = self.dpgrnn1(feat)
         feat = self.dpgrnn2(feat)
 
-        m_feat = self.decoder(feat, en_outs)
+        m_feat = self.decoder(feat, en_outs, self.erb.output_bins)
         
         m = self.erb.bs(m_feat)
 
@@ -363,6 +403,16 @@ class GTCRN(nn.Module):
         erb_high = max(2, min(erb_high, remaining_bins))
 
         return erb_low, erb_high
+
+    @staticmethod
+    def _compute_encoder_width(freq_bins):
+        def conv_out(width, kernel_size, stride, padding, dilation=1):
+            return max(1, (width + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1)
+
+        width = freq_bins
+        width = conv_out(width, kernel_size=5, stride=2, padding=2)
+        width = conv_out(width, kernel_size=5, stride=2, padding=2)
+        return width
 
 
 if __name__ == "__main__":
