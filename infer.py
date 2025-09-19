@@ -27,7 +27,10 @@ def main(args):
     inf_scp_list = []
     ref_scp_list = []
     for wav_name in tqdm(noisy_wavs):
-        noisy, fs = sf.read(os.path.join(noisy_folder, wav_name), dtype='float32')
+        noisy_path = os.path.join(noisy_folder, wav_name)
+        clean_path = os.path.join(clean_folder, wav_name)
+
+        noisy, fs = sf.read(noisy_path, dtype='float32')
         
         input = torch.FloatTensor(noisy).unsqueeze(0).to(device)
         with torch.inference_mode():
@@ -36,12 +39,19 @@ def main(args):
         
         uid = wav_name.split(".wav")[0]
         enh_path = os.path.join(enh_folder, uid + f"_enh.wav")
-        ref_path = os.path.join(clean_folder, wav_name)
+        ref_path = clean_path
         
         inf_scp_list.append([uid, enh_path])
         ref_scp_list.append([uid, ref_path])
         
         sf.write(enh_path, enhanced, fs)
+
+        noisy_copy_path = os.path.join(enh_folder, uid + "_noisy.wav")
+        clean_copy_path = os.path.join(enh_folder, uid + "_clean.wav")
+
+        shutil.copy2(noisy_path, noisy_copy_path)
+        if os.path.isfile(clean_path):
+            shutil.copy2(clean_path, clean_copy_path)
     
     # Save paths into scp file for evaluation
     with open(os.path.join(enh_folder, "inf.scp"), "w") as f:
