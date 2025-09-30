@@ -5,9 +5,18 @@ Ultra tiny, 33.0 MMACs, 23.67 K params
 import torch
 import numpy as np
 import torch.nn as nn
+from collections.abc import Mapping
 from einops import rearrange
 
 from .spectral_preprocess import SpectralPreprocessor
+
+
+def _to_plain(obj):
+    if isinstance(obj, Mapping):
+        return {k: _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_plain(v) for v in obj)
+    return obj
 
 
 class ERB(nn.Module):
@@ -333,9 +342,9 @@ class GTCRN(nn.Module):
         self.win_len = win_len
         self.preprocessor = None
         if preprocess is not None:
-            if not isinstance(preprocess, dict):
-                raise TypeError("preprocess configuration must be a dict or None")
-            self.preprocessor = SpectralPreprocessor(**preprocess)
+            if not isinstance(preprocess, Mapping):
+                raise TypeError("preprocess configuration must be a mapping or None")
+            self.preprocessor = SpectralPreprocessor(**_to_plain(preprocess))
 
         erb_low, erb_high = self._compute_erb_subbands(self.n_fft)
         self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
