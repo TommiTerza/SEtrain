@@ -7,6 +7,8 @@ import numpy as np
 import torch.nn as nn
 from einops import rearrange
 
+from .spectral_preprocess import SpectralPreprocessor
+
 
 class ERB(nn.Module):
     def __init__(self, erb_subband_1, erb_subband_2, nfft=512, high_lim=8000, fs=16000):
@@ -322,12 +324,18 @@ class GTCRN(nn.Module):
         self,
         n_fft=512,
         hop_len=256,
-        win_len=512
+        win_len=512,
+        preprocess=None,
     ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
+        self.preprocessor = None
+        if preprocess is not None:
+            if not isinstance(preprocess, dict):
+                raise TypeError("preprocess configuration must be a dict or None")
+            self.preprocessor = SpectralPreprocessor(**preprocess)
 
         erb_low, erb_high = self._compute_erb_subbands(self.n_fft)
         self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
@@ -353,15 +361,18 @@ class GTCRN(nn.Module):
         stft_kwargs = {'n_fft': self.n_fft, 'hop_length': self.hop_len, 'win_length': self.win_len,
                        'window': torch.hann_window(self.win_len).to(device), 'onesided': True}
         
-        spec = torch.stft(x,  **stft_kwargs, return_complex=True)
-        spec = torch.view_as_real(spec)
+        spec_complex = torch.stft(x,  **stft_kwargs, return_complex=True)
+        if self.preprocessor is not None:
+            spec_complex = self.preprocessor(spec_complex)
 
-        spec_real = spec[..., 0].permute(0,2,1)
-        spec_imag = spec[..., 1].permute(0,2,1)
-        spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
+        spec_ri = torch.view_as_real(spec_complex)
+
+        spec_real = spec_ri[..., 0].permute(0,2,1)
+        spec_imag = spec_ri[..., 1].permute(0,2,1)
+        spec_mag = torch.abs(spec_complex).permute(0,2,1)
         feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,F)
         
-        spec = spec.permute(0,3,2,1)  # (B,2,T,F)
+        spec = spec_ri.permute(0,3,2,1)  # (B,2,T,F)
 
         feat = self.erb.bm(feat)
         feat = self.sfe(feat)
@@ -381,7 +392,7 @@ class GTCRN(nn.Module):
         spec_enh = torch.complex(spec_enh[...,0], spec_enh[...,1])
         output = torch.istft(spec_enh, **stft_kwargs)
         output = torch.nn.functional.pad(output, (0, n_samples-output.shape[1]))
-        
+
         return output
 
     @classmethod
@@ -413,6 +424,63 @@ class GTCRN(nn.Module):
         width = conv_out(width, kernel_size=5, stride=2, padding=2)
         width = conv_out(width, kernel_size=5, stride=2, padding=2)
         return width
+
+
+class GTCRNCore(nn.Module):
+    """Feature-only wrapper around :class:`GTCRN` without STFT/ISTFT.
+
+    This module consumes the three-channel STFT features that the full GTCRN
+    builds internally (magnitude, real, imaginary) and produces the complex mask
+    predicted by the network. It is helpful for profiling the arithmetic of the
+    learned model without including FFT overhead.
+    """
+
+    def __init__(self, erb: ERB, sfe: SFE, encoder: Encoder,
+                 dpgrnn1: DPGRNN, dpgrnn2: DPGRNN, decoder: Decoder, mask: Mask):
+        super().__init__()
+        self.erb = erb
+        self.sfe = sfe
+        self.encoder = encoder
+        self.dpgrnn1 = dpgrnn1
+        self.dpgrnn2 = dpgrnn2
+        self.decoder = decoder
+        self.mask = mask
+
+    @classmethod
+    def from_full_model(cls, model: "GTCRN") -> "GTCRNCore":
+        """Build a core wrapper that reuses the weights of a trained GTCRN."""
+        return cls(model.erb, model.sfe, model.encoder,
+                   model.dpgrnn1, model.dpgrnn2, model.decoder, model.mask)
+
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        """Run the GTCRN network on pre-computed STFT features.
+
+        Parameters
+        ----------
+        feat:
+            Tensor with shape ``(B, 3, T, F)`` where the three channels are the
+            magnitude, real and imaginary STFT components. ``T`` can be any
+            number of frames ≥ 1. For per-frame profiling, set ``T=1``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex mask with shape ``(B, 2, T, F_full)`` that corresponds to
+            the output of :meth:`GTCRN.forward` before inverse STFT.
+        """
+        if feat.dim() != 4 or feat.shape[1] != 3:
+            raise ValueError("feat must have shape (B, 3, T, F)")
+
+        feat_erb = self.erb.bm(feat)
+        feat_erb = self.sfe(feat_erb)
+
+        encoded, skips = self.encoder(feat_erb)
+        encoded = self.dpgrnn1(encoded)
+        encoded = self.dpgrnn2(encoded)
+
+        mask_erb = self.decoder(encoded, skips, self.erb.output_bins)
+        mask_full = self.erb.bs(mask_erb)
+        return mask_full
 
 
 if __name__ == "__main__":

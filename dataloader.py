@@ -1,4 +1,5 @@
 import random
+import shutil
 from pathlib import Path
 from typing import List, Tuple
 
@@ -47,8 +48,45 @@ def _export_split(ds, split_root: Path, *, desc: str) -> None:
 def prepare_voicebank_dataset(root: Path) -> None:
     root = root.expanduser().resolve()
     train_noisy = root / "train" / "noisy"
-    valid_noisy = root / "valid" / "noisy"
-    if train_noisy.exists() and valid_noisy.exists() and any(train_noisy.glob("*.wav")) and any(valid_noisy.glob("*.wav")):
+    validation_noisy = root / "validation" / "noisy"
+    test_noisy = root / "test" / "noisy"
+
+    def _has_audio(directory: Path) -> bool:
+        return directory.exists() and any(directory.glob("*.wav"))
+
+    if _has_audio(train_noisy) and _has_audio(validation_noisy) and _has_audio(test_noisy):
+        return
+
+    legacy_valid_noisy = root / "valid" / "noisy"
+    legacy_valid_clean = root / "valid" / "clean"
+    if _has_audio(legacy_valid_noisy) and not (_has_audio(validation_noisy) and _has_audio(test_noisy)):
+        clean_lookup = {p.stem: p for p in legacy_valid_clean.glob("*.wav")}
+        noisy_files = sorted(legacy_valid_noisy.glob("*.wav"))
+        if noisy_files:
+            if len(noisy_files) < 2:
+                splits = [("validation", noisy_files), ("test", noisy_files)]
+            else:
+                split_idx = max(1, min(len(noisy_files) - 1, len(noisy_files) // 2))
+                splits = [
+                    ("validation", noisy_files[:split_idx]),
+                    ("test", noisy_files[split_idx:]),
+                ]
+            for subset, subset_files in splits:
+                noisy_target = root / subset / "noisy"
+                clean_target = root / subset / "clean"
+                noisy_target.mkdir(parents=True, exist_ok=True)
+                clean_target.mkdir(parents=True, exist_ok=True)
+                for noisy_path in subset_files:
+                    clean_path = clean_lookup.get(noisy_path.stem)
+                    if clean_path is None:
+                        continue
+                    shutil.move(str(noisy_path), noisy_target / noisy_path.name)
+                    if clean_path.exists():
+                        shutil.move(str(clean_path), clean_target / clean_path.name)
+        if legacy_valid_noisy.parent.exists() and not any(legacy_valid_noisy.glob("*.wav")):
+            shutil.rmtree(legacy_valid_noisy.parent)
+
+    if _has_audio(train_noisy) and _has_audio(validation_noisy) and _has_audio(test_noisy):
         return
 
     print(f"Preparing VoiceBank-DEMAND dataset in {root} ...")
@@ -61,8 +99,26 @@ def prepare_voicebank_dataset(root: Path) -> None:
     ds_test = ds_test.cast_column("noisy", audio_feature)
     ds_test = ds_test.cast_column("clean", audio_feature)
 
+    for subset in ("train", "validation", "test"):
+        subset_root = root / subset
+        if subset_root.exists():
+            shutil.rmtree(subset_root)
+
     _export_split(ds_train, root / "train", desc="VoiceBank train")
-    _export_split(ds_test, root / "valid", desc="VoiceBank valid")
+
+    num_test = len(ds_test)
+    if num_test >= 2:
+        split_idx = max(1, min(num_test - 1, num_test // 2))
+        validation_indices = list(range(split_idx))
+        test_indices = list(range(split_idx, num_test))
+        ds_validation = ds_test.select(validation_indices)
+        ds_evaluation = ds_test.select(test_indices)
+    else:
+        ds_validation = ds_test
+        ds_evaluation = ds_test
+
+    _export_split(ds_validation, root / "validation", desc="VoiceBank validation")
+    _export_split(ds_evaluation, root / "test", desc="VoiceBank test")
     print("VoiceBank-DEMAND preparation complete.")
 
 
@@ -76,6 +132,7 @@ class VoiceBankDemandDataset(torch.utils.data.Dataset):
         random_start_point: bool = True,
         train: bool = True,
         dataset_root: Path | None = None,
+        split: str | None = None,
     ):
         self.fs = fs
         self.length_in_seconds = length_in_seconds
@@ -83,12 +140,15 @@ class VoiceBankDemandDataset(torch.utils.data.Dataset):
         self.random_start_point = random_start_point
         self.train = train
         self.dataset_root = Path(dataset_root) if dataset_root is not None else DEFAULT_DATA_ROOT
+        self.split = (split or ("train" if train else "validation")).lower()
+        valid_splits = {"train", "validation", "test"}
+        if self.split not in valid_splits:
+            raise ValueError(f"Unknown split '{self.split}'. Expected one of {sorted(valid_splits)}")
 
         prepare_voicebank_dataset(self.dataset_root)
 
-        split = "train" if train else "valid"
-        noisy_dir = self.dataset_root / split / "noisy"
-        clean_dir = self.dataset_root / split / "clean"
+        noisy_dir = self.dataset_root / self.split / "noisy"
+        clean_dir = self.dataset_root / self.split / "clean"
 
         noisy_paths = {p.stem: p for p in sorted(noisy_dir.glob("*.wav"))}
         clean_paths = {p.stem: p for p in sorted(clean_dir.glob("*.wav"))}
