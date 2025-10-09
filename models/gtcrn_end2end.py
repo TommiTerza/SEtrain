@@ -2,6 +2,7 @@
 GTCRN: ShuffleNetV2 + SFE + TRA + 2 DPGRNN
 Ultra tiny, 33.0 MMACs, 23.67 K params
 """
+import os
 import torch
 import numpy as np
 import torch.nn as nn
@@ -172,13 +173,32 @@ class GTConvBlock(nn.Module):
 
 class GRNN(nn.Module):
     """Grouped RNN"""
-    def __init__(self, input_size, hidden_size, num_layers=1, batch_first=True, bidirectional=False):
+    def __init__(self, input_size, hidden_size, num_layers=1, batch_first=True, bidirectional=False, log_gru_inputs=False, log_file=None):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
         self.rnn1 = nn.GRU(input_size//2, hidden_size//2, num_layers, batch_first=batch_first, bidirectional=bidirectional)
         self.rnn2 = nn.GRU(input_size//2, hidden_size//2, num_layers, batch_first=batch_first, bidirectional=bidirectional)
+        self.log_gru_inputs = log_gru_inputs
+        self.log_file = log_file
+        self._log_keys = ("x1", "h1", "x2", "h2")
+        self._log_paths: dict[str, str] | None = None
+        self._log_buffers: dict[str, list] | None = None
+        if self.log_gru_inputs and self.log_file is not None:
+            base, ext = os.path.splitext(self.log_file)
+            ext = ext if ext else ".pkl"
+            self._log_paths = {
+                "x1": f"{base}_x1{ext}",
+                "h1": f"{base}_h1{ext}",
+                "x2": f"{base}_x2{ext}",
+                "h2": f"{base}_h2{ext}",
+            }
+            for path in self._log_paths.values():
+                directory = os.path.dirname(path)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+            self._log_buffers = {key: [] for key in self._log_keys}
 
     def forward(self, x, h=None):
         """
@@ -193,26 +213,70 @@ class GRNN(nn.Module):
         x1, x2 = torch.chunk(x, chunks=2, dim=-1)
         h1, h2 = torch.chunk(h, chunks=2, dim=-1)
         h1, h2 = h1.contiguous(), h2.contiguous()
+        logging_active = (
+            self.log_gru_inputs
+            and self.log_file is not None
+            and not self.training
+            and self._log_buffers is not None
+        )
+        if logging_active:
+            x1_vectors = x1.detach().cpu().reshape(-1, x1.shape[-1]).numpy()
+            x2_vectors = x2.detach().cpu().reshape(-1, x2.shape[-1]).numpy()
+            self._log_buffers["x1"].append(x1_vectors)
+            self._log_buffers["x2"].append(x2_vectors)
         y1, h1 = self.rnn1(x1, h1)
         y2, h2 = self.rnn2(x2, h2)
         y = torch.cat([y1, y2], dim=-1)
         h = torch.cat([h1, h2], dim=-1)
+        if logging_active:
+            # y1/y2 tensors hold the hidden activations at every timestep.
+            if y1.dim() == 3:
+                y1_vectors = y1.detach().cpu().permute(1, 0, 2).reshape(-1, y1.shape[-1]).numpy()
+            else:
+                y1_vectors = y1.detach().cpu().reshape(-1, y1.shape[-1]).numpy()
+            if y2.dim() == 3:
+                y2_vectors = y2.detach().cpu().permute(1, 0, 2).reshape(-1, y2.shape[-1]).numpy()
+            else:
+                y2_vectors = y2.detach().cpu().reshape(-1, y2.shape[-1]).numpy()
+            self._log_buffers["h1"].append(y1_vectors)
+            self._log_buffers["h2"].append(y2_vectors)
+        if logging_active and self._log_paths is not None:
+            import pickle
+            for key, path in self._log_paths.items():
+                buffers = self._log_buffers.get(key, [])
+                if not buffers:
+                    continue
+                payload = np.concatenate(buffers, axis=0)
+                with open(path, 'wb') as f:
+                    pickle.dump(payload, f)
+            self._log_buffers = {key: [] for key in self._log_keys}
         return y, h
     
     
 class DPGRNN(nn.Module):
     """Grouped Dual-path RNN"""
-    def __init__(self, input_size, width, hidden_size, **kwargs):
-        super(DPGRNN, self).__init__(**kwargs)
+    def __init__(self, input_size, width, hidden_size, log_gru_inputs=False, log_file_base=None):
+        super().__init__()
         self.input_size = input_size
         self.width = width
         self.hidden_size = hidden_size
+        # Prepare distinct log file names for intra/inter if a base is provided
+        if log_file_base is not None:
+            import os
+            root, ext = os.path.splitext(log_file_base)
+            intra_log = f"{root}_intra{ext}"
+            inter_log = f"{root}_inter{ext}"
+        else:
+            intra_log = None
+            inter_log = None
 
-        self.intra_rnn = GRNN(input_size=input_size, hidden_size=hidden_size//2, bidirectional=True)
+        self.intra_rnn = GRNN(input_size=input_size, hidden_size=hidden_size//2, bidirectional=True,
+                              log_gru_inputs=log_gru_inputs, log_file=intra_log)
         self.intra_fc = nn.Linear(hidden_size, hidden_size)
         self.intra_ln = nn.LayerNorm((width, hidden_size), eps=1e-8)
 
-        self.inter_rnn = GRNN(input_size=input_size, hidden_size=hidden_size, bidirectional=False)
+        self.inter_rnn = GRNN(input_size=input_size, hidden_size=hidden_size, bidirectional=False,
+                              log_gru_inputs=log_gru_inputs, log_file=inter_log)
         self.inter_fc = nn.Linear(hidden_size, hidden_size)
         self.inter_ln = nn.LayerNorm(((width, hidden_size)), eps=1e-8)
     
@@ -335,6 +399,8 @@ class GTCRN(nn.Module):
         hop_len=256,
         win_len=512,
         preprocess=None,
+        log_gru_inputs=False,
+        log_file=None,
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -353,9 +419,18 @@ class GTCRN(nn.Module):
         self.encoder = Encoder()
         encoder_width = self._compute_encoder_width(self.erb.output_bins)
 
-        self.dpgrnn1 = DPGRNN(16, encoder_width, 16)
-        self.dpgrnn2 = DPGRNN(16, encoder_width, 16)
-        
+        # If a log file base was provided, create distinct bases for dpgrnn1 and dpgrnn2
+        if log_file is not None:
+            import os
+            root, ext = os.path.splitext(log_file)
+            dp1_base = f"{root}_dp1{ext}"
+            dp2_base = f"{root}_dp2{ext}"
+        else:
+            dp1_base = None
+            dp2_base = None
+
+        self.dpgrnn1 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp1_base)
+        self.dpgrnn2 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp2_base)
         self.decoder = Decoder()
 
         self.mask = Mask()

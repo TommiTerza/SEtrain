@@ -5,9 +5,10 @@ import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
+import torch.nn as nn
 from omegaconf import OmegaConf
 
 from models.gtcrn_end2end import GTCRN, GTCRNCore
@@ -25,15 +26,104 @@ def _format(value: float) -> str:
     return f"{value:.3f}"
 
 
-def _iter_leaf_modules(model: torch.nn.Module) -> Iterable[Tuple[str, torch.nn.Module]]:
-    """Yield all named leaf modules of ``model``."""
 
-    for name, module in model.named_modules():
-        if not name:
-            continue
-        if any(module.children()):
-            continue
-        yield name, module
+_CONV_LAYERS = (
+    nn.Conv1d,
+    nn.Conv2d,
+    nn.Conv3d,
+    nn.ConvTranspose1d,
+    nn.ConvTranspose2d,
+    nn.ConvTranspose3d,
+)
+
+_NORM_LAYERS = (
+    nn.BatchNorm1d,
+    nn.BatchNorm2d,
+    nn.BatchNorm3d,
+    nn.LayerNorm,
+    nn.GroupNorm,
+    nn.InstanceNorm1d,
+    nn.InstanceNorm2d,
+    nn.InstanceNorm3d,
+)
+
+_ACTIVATION_LAYERS = (
+    nn.ReLU,
+    nn.ReLU6,
+    nn.PReLU,
+    nn.LeakyReLU,
+    nn.ELU,
+    nn.SELU,
+    nn.GELU,
+    nn.Softplus,
+    nn.Sigmoid,
+    nn.Tanh,
+    nn.SiLU,
+    nn.Hardtanh,
+)
+
+
+def _is_activation(module: nn.Module) -> bool:
+    return isinstance(module, _ACTIVATION_LAYERS)
+
+
+def _is_normalization(module: nn.Module) -> bool:
+    return isinstance(module, _NORM_LAYERS)
+
+
+def _is_convolution(module: nn.Module) -> bool:
+    return isinstance(module, _CONV_LAYERS)
+
+
+def _infer_block(name: str) -> str:
+    return name.split(".", 1)[0]
+
+
+def _block_component_category(block: str, name: str, module: nn.Module) -> str:
+    if ".tra." in name or name.endswith(".tra"):
+        return "TRA"
+    if "sfe" in name and module.__class__.__name__ == "SFE":
+        return "SFE"
+    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        return "BatchNorm"
+    if isinstance(module, nn.LayerNorm):
+        return "LayerNorm"
+    if _is_convolution(module):
+        if "point_conv" in name:
+            return "PointConv"
+        if "depth_conv" in name:
+            return "DepthConv"
+        return "Conv"
+    if isinstance(module, nn.GRU):
+        return "GRU"
+    if isinstance(module, nn.Linear):
+        return "Linear"
+    if _is_activation(module):
+        return "Activation"
+    if _is_normalization(module):
+        return "Normalization"
+    if module.__class__.__name__ == "SFE":
+        return "SFE"
+    return "Other"
+
+
+def _operation_family(name: str, module: nn.Module) -> str:
+    class_name = module.__class__.__name__
+    if class_name == "SFE":
+        return "SFE"
+    if _is_convolution(module):
+        return "Convolution"
+    if isinstance(module, nn.GRU):
+        return "GRU"
+    if isinstance(module, nn.Linear):
+        return "Linear"
+    if _is_normalization(module):
+        return "Normalization"
+    if _is_activation(module):
+        return "Activation"
+    if class_name.lower().startswith("dropout"):
+        return "Dropout"
+    return "Other"
 
 
 def _profile_latency(
@@ -50,8 +140,15 @@ def _profile_latency(
 
     dummy_input = torch.randn(*input_shape, device=device)
 
-    leaves = list(_iter_leaf_modules(model))
-    if not leaves:
+    module_lookup: Dict[str, nn.Module] = {}
+    is_leaf_map: Dict[str, bool] = {}
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        module_lookup[name] = module
+        is_leaf_map[name] = not any(module.children())
+
+    if not module_lookup:
         print("\nLatency profiling skipped (no measurable modules).")
         return
 
@@ -77,30 +174,31 @@ def _profile_latency(
 
         return _post_hook
 
-    with torch.inference_mode():
-        for _ in range(max(warmup, 0)):
-            model(dummy_input)
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-
     handles = []
-    for name, module in leaves:
-        handles.append(module.register_forward_pre_hook(make_pre_hook(name)))
-        handles.append(module.register_forward_hook(make_post_hook(name)))
-
     totals: List[float] = []
-    with torch.inference_mode():
-        for _ in range(runs):
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            total_start = time.perf_counter()
-            model(dummy_input)
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            totals.append(time.perf_counter() - total_start)
+    try:
+        for name, module in module_lookup.items():
+            handles.append(module.register_forward_pre_hook(make_pre_hook(name)))
+            handles.append(module.register_forward_hook(make_post_hook(name)))
 
-    for handle in handles:
-        handle.remove()
+        with torch.inference_mode():
+            for _ in range(max(warmup, 0)):
+                model(dummy_input)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+
+        with torch.inference_mode():
+            for _ in range(runs):
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                total_start = time.perf_counter()
+                model(dummy_input)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                totals.append(time.perf_counter() - total_start)
+    finally:
+        for handle in handles:
+            handle.remove()
 
     if not totals:
         print("\nLatency profiling skipped (no runs executed).")
@@ -118,12 +216,14 @@ def _profile_latency(
     print(f"Median latency: {total_median * 1e3:.3f} ms")
     print(f"Latency std-dev: {total_std * 1e3:.3f} ms")
 
+    module_summary: Dict[str, Dict[str, object]] = {}
     group_totals: Dict[str, float] = defaultdict(float)
     group_calls: Dict[str, float] = defaultdict(float)
-
     module_stats = []
+
     for name, durations in latencies.items():
-        if not durations:
+        module = module_lookup.get(name)
+        if module is None or not durations:
             continue
         total_time = sum(durations)
         calls = len(durations)
@@ -131,11 +231,27 @@ def _profile_latency(
         per_call = total_time / calls
         std = statistics.pstdev(durations) if calls > 1 else 0.0
         share = (per_run / total_mean * 100.0) if total_mean > 0 else 0.0
-        module_stats.append((name, per_run, per_call, std, calls, share))
 
-        top_level = name.split(".", 1)[0]
-        group_totals[top_level] += total_time
-        group_calls[top_level] += calls
+        info = {
+            "per_run": per_run,
+            "per_call": per_call,
+            "std": std,
+            "calls": calls,
+            "share": share,
+            "module": module,
+            "is_leaf": is_leaf_map.get(name, False),
+        }
+        module_summary[name] = info
+
+        if info["is_leaf"]:
+            group = _infer_block(name)
+            group_totals[group] += total_time
+            group_calls[group] += calls
+            module_stats.append((name, per_run, per_call, std, calls, share))
+
+    if not module_summary:
+        print("\nLatency profiling skipped (no module activations recorded).")
+        return
 
     if module_stats:
         print("\nTop-level modules (per-sample mean):")
@@ -166,6 +282,86 @@ def _profile_latency(
                     f"{std * 1e3:10.3f} {calls_per_run:12.2f} {share:10.2f}"
                 )
 
+    leaf_infos = {
+        name: info for name, info in module_summary.items() if info["is_leaf"]
+    }
+    total_leaf_time = sum(info["per_run"] for info in leaf_infos.values())
+
+    block_order = ("erb", "encoder", "dpgrnn1", "dpgrnn2", "decoder")
+    block_components: Dict[str, Dict[str, float]] = {
+        block: defaultdict(float) for block in block_order
+    }
+    block_totals = defaultdict(float)
+
+    for name, info in leaf_infos.items():
+        per_run = info["per_run"]
+        if per_run <= 0:
+            continue
+        block = _infer_block(name)
+        if block not in block_components:
+            continue
+        module = info["module"]
+        category = _block_component_category(block, name, module)
+        block_components[block][category] += per_run
+        block_totals[block] += per_run
+
+    dpgrnn_combined = defaultdict(float)
+    for block in ("dpgrnn1", "dpgrnn2"):
+        for category, value in block_components.get(block, {}).items():
+            dpgrnn_combined[category] += value
+    block_components["dpgrnn"] = dpgrnn_combined
+    block_totals["dpgrnn"] = block_totals["dpgrnn1"] + block_totals["dpgrnn2"]
+
+    print("\nMain blocks (per-sample mean, leaf modules):")
+    header = f"{'block':20s} {'time (ms)':>12s} {'share (%)':>12s}"
+    print(header)
+    print("-" * len(header))
+    for block in ("erb", "encoder", "dpgrnn1", "dpgrnn2", "dpgrnn", "decoder"):
+        per_run = block_totals.get(block, 0.0)
+        share = (per_run / total_mean * 100.0) if total_mean > 0 else 0.0
+        print(f"{block:20s} {per_run * 1e3:12.3f} {share:12.2f}")
+
+    for block in ("encoder", "dpgrnn1", "dpgrnn2", "dpgrnn", "decoder", "erb"):
+        components = block_components.get(block, {})
+        if not components:
+            continue
+        block_total = block_totals.get(block, 0.0)
+        print(f"\nBlock '{block}' breakdown (per-sample mean):")
+        header = f"{'component':25s} {'time (ms)':>12s} {'share (%)':>12s}"
+        print(header)
+        print("-" * len(header))
+        for component, value in sorted(components.items(), key=lambda item: item[1], reverse=True):
+            share = (value / block_total * 100.0) if block_total > 0 else 0.0
+            print(f"{component:25s} {value * 1e3:12.3f} {share:12.2f}")
+
+    type_totals: Dict[str, float] = defaultdict(float)
+    for name, info in leaf_infos.items():
+        per_run = info["per_run"]
+        if per_run <= 0:
+            continue
+        module = info["module"]
+        family = _operation_family(name, module)
+        type_totals[family] += per_run
+
+    accounted = sum(type_totals.values())
+    overhead = max(total_mean - accounted, 0.0)
+    if overhead > 0:
+        type_totals["Overhead"] += overhead
+
+    print("\nLatency by operation type (per-sample mean):")
+    header = f"{'type':20s} {'time (ms)':>12s} {'share (%)':>12s}"
+    print(header)
+    print("-" * len(header))
+    for op_type, value in sorted(type_totals.items(), key=lambda item: item[1], reverse=True):
+        share = (value / total_mean * 100.0) if total_mean > 0 else 0.0
+        print(f"{op_type:20s} {value * 1e3:12.3f} {share:12.2f}")
+
+    if total_leaf_time < total_mean:
+        gap = total_mean - total_leaf_time
+        print(
+            f"\nNote: {gap * 1e3:.3f} ms ({(gap / total_mean * 100.0) if total_mean > 0 else 0.0:.2f}%) "
+            "of latency comes from operations outside measured modules (e.g., tensor reshapes)."
+        )
 
 def _resolve_device(use_cuda: bool, device_pref: str) -> torch.device:
     if device_pref == "cpu":

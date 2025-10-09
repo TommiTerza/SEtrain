@@ -1,3 +1,4 @@
+import os
 import random
 import shutil
 from pathlib import Path
@@ -6,7 +7,7 @@ from typing import List, Tuple
 import numpy as np
 import soundfile as sf
 import torch
-from datasets import Audio, load_dataset
+from datasets import load_dataset
 from tqdm import tqdm
 
 VOICEBANK_DATASET_ID = "JacobLinCool/VoiceBank-DEMAND-16k"
@@ -39,8 +40,44 @@ def _export_split(ds, split_root: Path, *, desc: str) -> None:
         clean_path = clean_dir / f"{sid}.wav"
         if noisy_path.exists() and clean_path.exists():
             continue
-        noisy = np.asarray(example["noisy"]["array"], dtype=np.float32)
-        clean = np.asarray(example["clean"]["array"], dtype=np.float32)
+
+        # Try to obtain audio from the dataset example without relying on
+        # casting to the `Audio` feature (which may import torchcodec).
+        noisy = None
+        clean = None
+
+        noisy_field = example.get("noisy")
+        if isinstance(noisy_field, dict) and "array" in noisy_field:
+            noisy = np.asarray(noisy_field["array"], dtype=np.float32)
+        elif isinstance(noisy_field, dict) and "path" in noisy_field:
+            try:
+                noisy, _ = sf.read(noisy_field["path"], dtype=np.float32)
+            except Exception:
+                noisy = None
+        elif isinstance(noisy_field, str):
+            try:
+                noisy, _ = sf.read(noisy_field, dtype=np.float32)
+            except Exception:
+                noisy = None
+
+        clean_field = example.get("clean")
+        if isinstance(clean_field, dict) and "array" in clean_field:
+            clean = np.asarray(clean_field["array"], dtype=np.float32)
+        elif isinstance(clean_field, dict) and "path" in clean_field:
+            try:
+                clean, _ = sf.read(clean_field["path"], dtype=np.float32)
+            except Exception:
+                clean = None
+        elif isinstance(clean_field, str):
+            try:
+                clean, _ = sf.read(clean_field, dtype=np.float32)
+            except Exception:
+                clean = None
+
+        if noisy is None or clean is None:
+            # Skip examples where we couldn't fetch audio data
+            continue
+
         _write_wav(noisy_path, noisy)
         _write_wav(clean_path, clean)
 
@@ -90,21 +127,54 @@ def prepare_voicebank_dataset(root: Path) -> None:
         return
 
     print(f"Preparing VoiceBank-DEMAND dataset in {root} ...")
-    ds_train = load_dataset(VOICEBANK_DATASET_ID, split="train")
-    ds_test = load_dataset(VOICEBANK_DATASET_ID, split="test")
+    os.environ.setdefault("HF_DATASETS_AUDIO_LOADING_BACKEND", "soundfile")
+    try:
+        ds_train = load_dataset(VOICEBANK_DATASET_ID, split="train")
+        ds_test = load_dataset(VOICEBANK_DATASET_ID, split="test")
+    except Exception as e:
+        # Common failure mode: datasets tries to decode audio via optional
+        # native extensions (torchcodec) and fails if native libs/ffmpeg
+        # are missing or incompatible. Provide a clearer message and
+        # suggest alternatives instead of crashing with the low-level
+        # libtorchcodec error.
+        msg = (
+            "Failed to load the VoiceBank-DEMAND dataset due to an audio decoding dependency (likely torchcodec)\n"
+            "Possible remedies:\n"
+            "  1) Install FFmpeg (system package) so optional audio backends work.\n"
+            "  2) Install a compatible torchcodec build (not recommended).\n"
+            "  3) Prepare the dataset manually and point the dataloader to a local copy by setting dataset_root.\n"
+            "     The expected layout is: <dataset_root>/<split>/{noisy,clean}/*.wav\n"
+            "  4) Avoid using the HuggingFace-hosted dataset: download WAVs manually into the local data folder.\n"
+            "Original error: " + str(e)
+        )
+        raise RuntimeError(msg) from e
 
-    audio_feature = Audio(sampling_rate=DEFAULT_FS)
-    ds_train = ds_train.cast_column("noisy", audio_feature)
-    ds_train = ds_train.cast_column("clean", audio_feature)
-    ds_test = ds_test.cast_column("noisy", audio_feature)
-    ds_test = ds_test.cast_column("clean", audio_feature)
+    # Avoid casting with the `Audio` feature to prevent importing optional
+    # native extensions (e.g. torchcodec). We'll read arrays/paths directly
+    # from the dataset records in _export_split.
 
     for subset in ("train", "validation", "test"):
         subset_root = root / subset
         if subset_root.exists():
             shutil.rmtree(subset_root)
 
-    _export_split(ds_train, root / "train", desc="VoiceBank train")
+    try:
+        _export_split(ds_train, root / "train", desc="VoiceBank train")
+    except Exception as e:
+        msg = (
+            "Failed while exporting the HuggingFace VoiceBank-DEMAND dataset.\n"
+            "This commonly happens because the dataset contains an `audio` feature that the `datasets` package\n"
+            "tries to decode using optional native backends (torchcodec/FFmpeg), which are not available in your\n"
+            "environment.\n\n"
+            "Remedies:\n"
+            "  * Prepare the dataset manually and point `dataset_root` to the local folder with WAVs\n"
+            "    (expected layout: <dataset_root>/<split>/{noisy,clean}/*.wav).\n"
+            "  * Install FFmpeg system libraries so the optional audio decoders work.\n"
+            "  * If you still want automatic export, ensure that the `datasets` package can supply raw arrays or paths\n"
+            "    (check dataset.features for the `noisy`/`clean` column types).\n\n"
+            f"Original error: {e}"
+        )
+        raise RuntimeError(msg) from e
 
     num_test = len(ds_test)
     if num_test >= 2:
@@ -117,8 +187,17 @@ def prepare_voicebank_dataset(root: Path) -> None:
         ds_validation = ds_test
         ds_evaluation = ds_test
 
-    _export_split(ds_validation, root / "validation", desc="VoiceBank validation")
-    _export_split(ds_evaluation, root / "test", desc="VoiceBank test")
+    try:
+        _export_split(ds_validation, root / "validation", desc="VoiceBank validation")
+        _export_split(ds_evaluation, root / "test", desc="VoiceBank test")
+    except Exception as e:
+        msg = (
+            "Failed while exporting validation/test splits from the HuggingFace dataset.\n"
+            "This likely indicates the same audio-decoding incompatibility (torchcodec/FFmpeg).\n"
+            "Recommended action: download or move WAV files locally and set `dataset_root` to that folder.\n\n"
+            f"Original error: {e}"
+        )
+        raise RuntimeError(msg) from e
     print("VoiceBank-DEMAND preparation complete.")
 
 

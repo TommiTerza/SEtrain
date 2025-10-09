@@ -1,10 +1,23 @@
 test_dataset: 
-  noisy_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_noisy/
-  clean_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_clean/
+  # If you want to use explicit folders, set noisy_dir and clean_dir.
+  # Otherwise, use `dataset` below to prepare/load the VoiceBank-DEMAND dataset via the dataloader.
+  noisy_dir: null
+  clean_dir: null
+
+dataset:
+  # Options forwarded to VoiceBankDemandDataset in dataloader.py
+  # If dataset_root is not provided, the dataloader will use the bundled DEFAULT_DATA_ROOT
+  dataset_root: null
+  length_in_seconds: 10
+  num_data_tot: -1
+  num_data_per_epoch: -1
+  random_start_point: False
+  train: False
+  split: test
 
 network:
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn_2025-03-31-11h26m
+  exp_path: /home/tommaso/git/SEtrain/experiments/gtcrn_2025-10-01-16h05m
   config: ${network.exp_path}/config.yaml
-  ckpt_name: model_001
+  ckpt_name: best_model_111
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
   enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced

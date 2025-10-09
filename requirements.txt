@@ -1,8 +1,8 @@
 einops==0.7.0
 librosa==0.10.1
-numpy==1.24.4
+numpy==1.26.4
 omegaconf==2.3.0
-pandas==2.1.3
+pandas>=2.2.2
 pesq==0.0.4
 datasets
 ptflops==0.7
