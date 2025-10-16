@@ -444,6 +444,54 @@ def profile_model(
     if print_detailed:
         print("\n(calflops detailed breakdown was printed above.)")
 
+        type_param_totals: Dict[str, int] = defaultdict(int)
+        type_module_totals: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        accounted_params = 0
+
+        for module_name, module in core_model.named_modules():
+            local_params = list(module.named_parameters(recurse=False))
+            if not local_params:
+                continue
+            family = _operation_family(module_name, module)
+            for _, param in local_params:
+                if not param.requires_grad:
+                    continue
+                numel = param.numel()
+                type_param_totals[family] += numel
+                type_module_totals[family][module_name or "<root>"] += numel
+                accounted_params += numel
+
+        calflops_params = int(round(float(params))) if params else 0
+        table_denominator = accounted_params if accounted_params > 0 else max(calflops_params, 1)
+
+        if calflops_params > accounted_params:
+            type_param_totals["Unaccounted"] += calflops_params - accounted_params
+            table_denominator = calflops_params
+
+        print("\nParameters by operation type:")
+        header = f"{'type':20s} {'params':>15s} {'share (%)':>12s}"
+        print(header)
+        print("-" * len(header))
+        for op_type, count in sorted(type_param_totals.items(), key=lambda item: item[1], reverse=True):
+            share = (count / table_denominator * 100.0) if table_denominator > 0 else 0.0
+            print(f"{op_type:20s} {_format(float(count)):>15s} {share:12.2f}")
+            contribs = type_module_totals.get(op_type)
+            if contribs:
+                ranked = sorted(contribs.items(), key=lambda item: item[1], reverse=True)[:5]
+                details = ", ".join(
+                    f"{name or '<root>'}={_format(float(vals))}"
+                    for name, vals in ranked
+                )
+                print(f"    top modules: {details}")
+
+        if calflops_params and calflops_params != accounted_params:
+            diff = accounted_params - calflops_params
+            direction = "more" if diff > 0 else "fewer"
+            print(
+                f"Note: module traversal found {abs(diff)} {direction} parameters than calflops reported "
+                f"({accounted_params} vs {calflops_params})."
+            )
+
     if latency:
         effective_batch = max(batch_size, 1)
         effective_frames = max(frames, 1)
