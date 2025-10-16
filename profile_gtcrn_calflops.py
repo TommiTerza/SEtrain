@@ -282,6 +282,21 @@ def _profile_latency(
                     f"{std * 1e3:10.3f} {calls_per_run:12.2f} {share:10.2f}"
                 )
 
+    # Build module hierarchy for exclusive-time accounting
+    child_map: Dict[str, List[str]] = defaultdict(list)
+    for name in module_summary:
+        parent = name.rsplit(".", 1)[0] if "." in name else ""
+        child_map[parent].append(name)
+
+    exclusive_times: Dict[str, float] = {}
+    for name in sorted(module_summary.keys(), key=lambda item: item.count("."), reverse=True):
+        per_run = module_summary[name]["per_run"]  # type: ignore[index]
+        child_sum = sum(exclusive_times.get(child, 0.0) for child in child_map.get(name, []) if child in module_summary)
+        exclusive = per_run - child_sum
+        if exclusive < 0 and abs(exclusive) <= abs(per_run) * 1e-6:
+            exclusive = 0.0
+        exclusive_times[name] = max(exclusive, 0.0)
+
     leaf_infos = {
         name: info for name, info in module_summary.items() if info["is_leaf"]
     }
@@ -355,6 +370,49 @@ def _profile_latency(
     for op_type, value in sorted(type_totals.items(), key=lambda item: item[1], reverse=True):
         share = (value / total_mean * 100.0) if total_mean > 0 else 0.0
         print(f"{op_type:20s} {value * 1e3:12.3f} {share:12.2f}")
+
+    non_leaf_overhead = {
+        name: exclusive_times.get(name, 0.0)
+        for name, info in module_summary.items()
+        if not info["is_leaf"]
+    }
+    total_overhead = sum(non_leaf_overhead.values())
+
+    if total_overhead > 0:
+        print("\nOverhead (non-leaf exclusive time):")
+        header = (
+            f"{'module':50s} {'overhead (ms)':>15s} "
+            f"{'share total (%)':>16s} {'share overhead (%)':>20s}"
+        )
+        print(header)
+        print("-" * len(header))
+        for name, value in sorted(non_leaf_overhead.items(), key=lambda item: item[1], reverse=True):
+            if value <= 0:
+                continue
+            share_total = (value / total_mean * 100.0) if total_mean > 0 else 0.0
+            share_overhead = (value / total_overhead * 100.0) if total_overhead > 0 else 0.0
+            print(
+                f"{name:50s} {value * 1e3:15.3f} "
+                f"{share_total:16.2f} {share_overhead:20.2f}"
+            )
+
+        block_overhead: Dict[str, float] = defaultdict(float)
+        for name, value in non_leaf_overhead.items():
+            if value <= 0:
+                continue
+            block = _infer_block(name)
+            block_overhead[block] += value
+
+        if block_overhead:
+            print("\nOverhead by block:")
+            header = f"{'block':20s} {'overhead (ms)':>15s} {'share overhead (%)':>20s}"
+            print(header)
+            print("-" * len(header))
+            for block, value in sorted(block_overhead.items(), key=lambda item: item[1], reverse=True):
+                if value <= 0:
+                    continue
+                share_overhead = (value / total_overhead * 100.0) if total_overhead > 0 else 0.0
+                print(f"{block:20s} {value * 1e3:15.3f} {share_overhead:20.2f}")
 
     if total_leaf_time < total_mean:
         gap = total_mean - total_leaf_time
