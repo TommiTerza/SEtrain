@@ -19,8 +19,8 @@ def _load_component_arrays(log_file: str) -> dict[str, np.ndarray]:
     ext = ext if ext else ".pkl"
     components = {}
 
-    # Prefer the new multi-file format: <base>_{x1,h1,x2,h2}<ext>
-    for key in ("x1", "h1", "x2", "h2"):
+    # Prefer the new multi-file format: <base>_{x1,h1,x2,h2,x,h}<ext>
+    for key in ("x1", "h1", "x2", "h2", "x", "h"):
         candidate = f"{base}_{key}{ext}"
         if os.path.exists(candidate):
             with open(candidate, 'rb') as f:
@@ -266,7 +266,7 @@ def _save_table_as_image(rows: list[dict], title: str, path: Path) -> None:
 
 
 def _collect_directory_stats(directory: Path, threshold: float) -> dict[str, list[dict]]:
-    suffixes = {'x1': '_x1', 'x2': '_x2', 'h1': '_h1', 'h2': '_h2'}
+    suffixes = {'x1': '_x1', 'x2': '_x2', 'h1': '_h1', 'h2': '_h2', 'x': '_x', 'h': '_h'}
     tables: dict[str, list[dict]] = {key: [] for key in suffixes}
 
     for comp, suffix in suffixes.items():
@@ -291,7 +291,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Compute GRU input occupancy mean from log file.')
     parser.add_argument('log_file', type=str, help='Path to GRU input log base (without component suffix)')
     parser.add_argument('--threshold', type=float, default=1e-3, help='Occupancy threshold')
-    parser.add_argument('--component', choices=['x1', 'h1', 'x2', 'h2', 'all'], default='all',
+    parser.add_argument('--component', choices=['x1', 'h1', 'x2', 'h2', 'x', 'h', 'all'], default='all',
                         help='Select a specific component to analyse (default: all)')
     parser.add_argument('--plot-prefix', type=str, default=None,
                         help='Prefix for output plots (default: same as log_file)')
@@ -329,16 +329,18 @@ if __name__ == '__main__':
     if args.table_all:
         directory = log_path if log_path.is_dir() else log_path.parent
         tables = _collect_directory_stats(directory, args.threshold)
-        x_rows = sorted(tables['x1'] + tables['x2'], key=lambda row: row['label'])
-        y_rows = sorted(tables['h1'] + tables['h2'], key=lambda row: row['label'])
-        _print_table(x_rows, 'X component summary (x1/x2)')
-        _print_table(y_rows, 'Y component summary (h1/h2)')
+        x_components = tables['x1'] + tables['x2'] + tables['x']
+        y_components = tables['h1'] + tables['h2'] + tables['h']
+        x_rows = sorted(x_components, key=lambda row: row['label'])
+        y_rows = sorted(y_components, key=lambda row: row['label'])
+        _print_table(x_rows, 'X component summary (x1/x2/x)')
+        _print_table(y_rows, 'Y component summary (h1/h2/h)')
 
         if x_rows:
             x_path = directory / 'summary_x_components.png'
-            _save_table_as_image(x_rows, 'X component summary (x1/x2)', x_path)
+            _save_table_as_image(x_rows, 'X component summary (x1/x2/x)', x_path)
             print(f"Saved X component table to {x_path}")
         if y_rows:
             y_path = directory / 'summary_y_components.png'
-            _save_table_as_image(y_rows, 'Y component summary (h1/h2)', y_path)
+            _save_table_as_image(y_rows, 'Y component summary (h1/h2/h)', y_path)
             print(f"Saved Y component table to {y_path}")

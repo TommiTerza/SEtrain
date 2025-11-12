@@ -322,6 +322,8 @@ if __name__ == '__main__':
         default='cpu',
         help='Comma-separated GPU indices (e.g. "0,1") or "cpu"'
     )
+    parser.add_argument('--custom-gru', action='store_true',
+                        help='Use the handcrafted GRU implementation inside GTCRN.')
 
     args = parser.parse_args()
 
@@ -341,6 +343,9 @@ if __name__ == '__main__':
             args.world_size = len(device_ids)
 
     config = OmegaConf.load(args.config)
+    if 'network_config' not in config:
+        config['network_config'] = {}
+    config['network_config']['use_custom_gru'] = bool(getattr(args, 'custom_gru', False))
     
     if args.use_cuda and args.world_size > 1:
         torch.multiprocessing.spawn(

@@ -25,6 +25,8 @@ def main(args):
     if args.log_gru_inputs:
         net_conf['log_gru_inputs'] = True
         net_conf['log_file'] = args.log_file
+    if args.custom_gru:
+        net_conf['use_custom_gru'] = True
     model = Model(**net_conf).to(device)
     checkpoint = torch.load(cfg_infer.network.checkpoint, map_location=device)
     model.load_state_dict(checkpoint['model'])
@@ -98,6 +100,8 @@ if __name__ == "__main__":
                         help='Enable dumping of GRU inputs during inference')
     parser.add_argument('--log-file', type=str, default='gru_inputs.pkl',
                         help='Path to output pickle file for GRU inputs')
+    parser.add_argument('--custom-gru', action='store_true',
+                        help='Use the handcrafted GRU implementation for GTCRN inference.')
 
     args = parser.parse_args()
     main(args)

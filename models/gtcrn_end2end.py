@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from einops import rearrange
 
 from .spectral_preprocess import SpectralPreprocessor
+from .custom_gru_torch import CustomGRU
 
 
 def _to_plain(obj):
@@ -89,16 +90,58 @@ class SFE(nn.Module):
 
 class TRA(nn.Module):
     """Temporal Recurrent Attention"""
-    def __init__(self, channels):
+    def __init__(self, channels, log_gru_inputs=False, log_file=None, use_custom_gru=False):
         super().__init__()
-        self.att_gru = nn.GRU(channels, channels*2, 1, batch_first=True)
+        gru_cls = CustomGRU if use_custom_gru else nn.GRU
+        self.att_gru = gru_cls(channels, channels*2, 1, batch_first=True)
         self.att_fc = nn.Linear(channels*2, channels)
         self.att_act = nn.Sigmoid()
+        self.log_gru_inputs = log_gru_inputs
+        self.log_file = log_file
+        self._log_keys = ("x", "h")
+        self._log_paths: dict[str, str] | None = None
+        self._log_buffers: dict[str, list] | None = None
+        if self.log_gru_inputs and self.log_file is not None:
+            base, ext = os.path.splitext(self.log_file)
+            ext = ext if ext else ".pkl"
+            self._log_paths = {
+                "x": f"{base}_x{ext}",
+                "h": f"{base}_h{ext}",
+            }
+            for path in self._log_paths.values():
+                directory = os.path.dirname(path)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+            self._log_buffers = {key: [] for key in self._log_keys}
 
     def forward(self, x):
         """x: (B,C,T,F)"""
         zt = torch.mean(x.pow(2), dim=-1)  # (B,C,T)
-        at = self.att_gru(zt.transpose(1,2))[0]
+        gru_input = zt.transpose(1, 2)
+        logging_active = (
+            self.log_gru_inputs
+            and self.log_file is not None
+            and not self.training
+            and self._log_buffers is not None
+        )
+        if logging_active:
+            x_vectors = gru_input.detach().cpu().reshape(-1, gru_input.shape[-1]).numpy()
+            self._log_buffers["x"].append(x_vectors)
+        at = self.att_gru(gru_input)[0]
+        if logging_active:
+            h_vectors = at.detach().cpu().reshape(-1, at.shape[-1]).numpy()
+            self._log_buffers["h"].append(h_vectors)
+            if self._log_paths is not None:
+                import pickle
+
+                for key, path in self._log_paths.items():
+                    buffers = self._log_buffers.get(key, [])
+                    if not buffers:
+                        continue
+                    payload = np.concatenate(buffers, axis=0)
+                    with open(path, 'wb') as f:
+                        pickle.dump(payload, f)
+                self._log_buffers = {key: [] for key in self._log_keys}
         at = self.att_fc(at).transpose(1,2)
         at = self.att_act(at)
         At = at[..., None]  # (B,C,T,1)
@@ -124,7 +167,8 @@ class ConvBlock(nn.Module):
 
 class GTConvBlock(nn.Module):
     """Group Temporal Convolution"""
-    def __init__(self, in_channels, hidden_channels, kernel_size, stride, padding, dilation, use_deconv=False):
+    def __init__(self, in_channels, hidden_channels, kernel_size, stride, padding, dilation,
+                 use_deconv=False, log_gru_inputs=False, log_file=None, use_custom_gru=False):
         super().__init__()
         self.use_deconv = use_deconv
         self.pad_size = (kernel_size[0]-1) * dilation[0]
@@ -145,7 +189,8 @@ class GTConvBlock(nn.Module):
         self.point_conv2 = conv_module(hidden_channels, in_channels//2, 1)
         self.point_bn2 = nn.BatchNorm2d(in_channels//2)
         
-        self.tra = TRA(in_channels//2)
+        self.tra = TRA(in_channels//2, log_gru_inputs=log_gru_inputs, log_file=log_file,
+                       use_custom_gru=use_custom_gru)
 
     def shuffle(self, x1, x2):
         """x1, x2: (B,C,T,F)"""
@@ -173,13 +218,36 @@ class GTConvBlock(nn.Module):
 
 class GRNN(nn.Module):
     """Grouped RNN"""
-    def __init__(self, input_size, hidden_size, num_layers=1, batch_first=True, bidirectional=False, log_gru_inputs=False, log_file=None):
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        num_layers=1,
+        batch_first=True,
+        bidirectional=False,
+        log_gru_inputs=False,
+        log_file=None,
+        use_custom_gru=False,
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
-        self.rnn1 = nn.GRU(input_size//2, hidden_size//2, num_layers, batch_first=batch_first, bidirectional=bidirectional)
-        self.rnn2 = nn.GRU(input_size//2, hidden_size//2, num_layers, batch_first=batch_first, bidirectional=bidirectional)
+        gru_cls = CustomGRU if use_custom_gru else nn.GRU
+        self.rnn1 = gru_cls(
+            input_size // 2,
+            hidden_size // 2,
+            num_layers,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+        )
+        self.rnn2 = gru_cls(
+            input_size // 2,
+            hidden_size // 2,
+            num_layers,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+        )
         self.log_gru_inputs = log_gru_inputs
         self.log_file = log_file
         self._log_keys = ("x1", "h1", "x2", "h2")
@@ -255,7 +323,7 @@ class GRNN(nn.Module):
     
 class DPGRNN(nn.Module):
     """Grouped Dual-path RNN"""
-    def __init__(self, input_size, width, hidden_size, log_gru_inputs=False, log_file_base=None):
+    def __init__(self, input_size, width, hidden_size, log_gru_inputs=False, log_file_base=None, use_custom_gru=False):
         super().__init__()
         self.input_size = input_size
         self.width = width
@@ -271,12 +339,12 @@ class DPGRNN(nn.Module):
             inter_log = None
 
         self.intra_rnn = GRNN(input_size=input_size, hidden_size=hidden_size//2, bidirectional=True,
-                              log_gru_inputs=log_gru_inputs, log_file=intra_log)
+                              log_gru_inputs=log_gru_inputs, log_file=intra_log, use_custom_gru=use_custom_gru)
         self.intra_fc = nn.Linear(hidden_size, hidden_size)
         self.intra_ln = nn.LayerNorm((width, hidden_size), eps=1e-8)
 
         self.inter_rnn = GRNN(input_size=input_size, hidden_size=hidden_size, bidirectional=False,
-                              log_gru_inputs=log_gru_inputs, log_file=inter_log)
+                              log_gru_inputs=log_gru_inputs, log_file=inter_log, use_custom_gru=use_custom_gru)
         self.inter_fc = nn.Linear(hidden_size, hidden_size)
         self.inter_ln = nn.LayerNorm(((width, hidden_size)), eps=1e-8)
     
@@ -307,14 +375,20 @@ class DPGRNN(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self):
+    def __init__(self, log_gru_inputs=False, tra_log_files=None, use_custom_gru=False):
         super().__init__()
+        tra_logs = tra_log_files or [None] * 3
+        if len(tra_logs) != 3:
+            raise ValueError("tra_log_files must provide 3 entries for Encoder GTConvBlocks")
         self.en_convs = nn.ModuleList([
             ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[0], use_custom_gru=use_custom_gru),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[1], use_custom_gru=use_custom_gru),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[2], use_custom_gru=use_custom_gru)
         ])
 
     def forward(self, x):
@@ -326,12 +400,18 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, log_gru_inputs=False, tra_log_files=None, use_custom_gru=False):
         super().__init__()
+        tra_logs = tra_log_files or [None] * 3
+        if len(tra_logs) != 3:
+            raise ValueError("tra_log_files must provide 3 entries for Decoder GTConvBlocks")
         self.de_convs = nn.ModuleList([
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[0], use_custom_gru=use_custom_gru),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[1], use_custom_gru=use_custom_gru),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True,
+                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[2], use_custom_gru=use_custom_gru),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
             ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=True)
         ])
@@ -401,6 +481,7 @@ class GTCRN(nn.Module):
         preprocess=None,
         log_gru_inputs=False,
         log_file=None,
+        use_custom_gru=False,
     ):
         super().__init__()
         self.n_fft = n_fft
@@ -416,22 +497,34 @@ class GTCRN(nn.Module):
         self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
         self.sfe = SFE(3, 1)
 
-        self.encoder = Encoder()
         encoder_width = self._compute_encoder_width(self.erb.output_bins)
 
-        # If a log file base was provided, create distinct bases for dpgrnn1 and dpgrnn2
+        encoder_tra_logs = None
+        decoder_tra_logs = None
+
+        # If a log file base was provided, create distinct bases for every logging site
         if log_file is not None:
             import os
+
             root, ext = os.path.splitext(log_file)
+            ext = ext if ext else ".pkl"
             dp1_base = f"{root}_dp1{ext}"
             dp2_base = f"{root}_dp2{ext}"
+            encoder_tra_logs = [f"{root}_tra_enc{i}{ext}" for i in range(3)]
+            decoder_tra_logs = [f"{root}_tra_dec{i}{ext}" for i in range(3)]
         else:
             dp1_base = None
             dp2_base = None
 
-        self.dpgrnn1 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp1_base)
-        self.dpgrnn2 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp2_base)
-        self.decoder = Decoder()
+        self.encoder = Encoder(log_gru_inputs=log_gru_inputs, tra_log_files=encoder_tra_logs,
+                               use_custom_gru=use_custom_gru)
+
+        self.dpgrnn1 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp1_base,
+                              use_custom_gru=use_custom_gru)
+        self.dpgrnn2 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp2_base,
+                              use_custom_gru=use_custom_gru)
+        self.decoder = Decoder(log_gru_inputs=log_gru_inputs, tra_log_files=decoder_tra_logs,
+                               use_custom_gru=use_custom_gru)
 
         self.mask = Mask()
 
