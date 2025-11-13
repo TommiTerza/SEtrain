@@ -18,7 +18,10 @@ def main(args):
     enh_folder = cfg_infer.network.enh_folder
     os.makedirs(enh_folder, exist_ok=True)
     
-    device = torch.device(f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu')
+    if args.device.lower() == 'cpu' or not torch.cuda.is_available():
+        device = torch.device('cpu')
+    else:
+        device = torch.device(f'cuda:{args.device}')
 
     # Allow overriding the network config to enable GRU input logging during inference
     net_conf = dict(cfg_network['network_config'])

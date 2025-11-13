@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -301,7 +302,10 @@ class ThresholdOptimizer:
         best_metric = -float("inf")
         best_state = None
         baseline_metric: Optional[float] = None
+        start_time = time.time()
+        iteration = 0
         while value <= self.max_threshold + 1e-9:
+            iter_start = time.time()
             log_base = self.work_dir / f"sweep_run_{self.run_counter}"
             self.run_counter += 1
             for param in self.params:
@@ -317,7 +321,19 @@ class ThresholdOptimizer:
                 best_metric = metric
                 best_state = copy.deepcopy(self.state)
             if self.verbose:
-                print(f"[opt] sweep value {value} -> metric {metric:.4f}")
+                elapsed = time.time() - iter_start
+                eta_text = ""
+                if baseline_metric is not None and self.min_metric_drop is not None:
+                    target = baseline_metric * (1.0 - self.min_metric_drop)
+                    progress = baseline_metric - metric
+                    total_needed = baseline_metric - target
+                    if total_needed > 0:
+                        fraction = min(max(progress / total_needed, 0.0), 1.0)
+                        if fraction > 0:
+                            total_elapsed = time.time() - start_time
+                            eta = total_elapsed * (1 - fraction) / max(fraction, 1e-9)
+                            eta_text = f", ETA ~ {eta/60:.1f} min"
+                print(f"[opt] sweep value {value:.4f} -> metric {metric:.4f} (step took {elapsed:.1f}s{eta_text})")
             stop = False
             if metric < self.min_metric:
                 stop = True
