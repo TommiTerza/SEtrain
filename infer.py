@@ -22,6 +22,11 @@ def main(args):
 
     # Allow overriding the network config to enable GRU input logging during inference
     net_conf = dict(cfg_network['network_config'])
+    # Optional DeltaGRU overrides from cfg_infer.yaml
+    for key in ("use_delta_gru", "delta_gru_threshold_x", "delta_gru_threshold_h", "delta_gru_thresholds"):
+        override_val = cfg_infer.network.get(key, None)
+        if override_val is not None:
+            net_conf[key] = override_val
     if args.log_gru_inputs:
         net_conf['log_gru_inputs'] = True
         net_conf['log_file'] = args.log_file

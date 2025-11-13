@@ -6,11 +6,17 @@ import os
 import torch
 import numpy as np
 import torch.nn as nn
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import Optional, Callable, Any
 from einops import rearrange
 
 from .spectral_preprocess import SpectralPreprocessor
-from .custom_gru_torch import CustomGRU
+
+
+def _default_gru_factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
+    kwargs.pop("threshold_x", None)
+    kwargs.pop("threshold_h", None)
+    return nn.GRU(input_size, hidden_size, **kwargs)
 
 
 def _to_plain(obj):
@@ -19,6 +25,43 @@ def _to_plain(obj):
     if isinstance(obj, (list, tuple)):
         return type(obj)(_to_plain(v) for v in obj)
     return obj
+
+
+def _normalize_threshold_entry(entry: Any, default_x: Optional[float], default_h: Optional[float]) -> dict[str, Optional[float]]:
+    if isinstance(entry, Mapping):
+        x_val = entry.get("x")
+        h_val = entry.get("h")
+        x = default_x if x_val is None else x_val
+        h = default_h if h_val is None else h_val
+    elif entry is None:
+        x, h = default_x, default_h
+    else:
+        x = entry
+        h = entry
+    return {"x": x, "h": h}
+
+
+def _normalize_threshold_list(values: Any, count: int, default_x: Optional[float], default_h: Optional[float]) -> list[dict[str, Optional[float]]]:
+    seq: Sequence[Any]
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+        seq = values  # type: ignore[assignment]
+    else:
+        seq = []
+    normalized: list[dict[str, Optional[float]]] = []
+    for idx in range(count):
+        entry = seq[idx] if idx < len(seq) else None
+        normalized.append(_normalize_threshold_entry(entry, default_x, default_h))
+    return normalized
+
+
+def _normalize_dp_thresholds(values: Any, default_x: Optional[float], default_h: Optional[float]) -> dict[str, dict[str, Optional[float]]]:
+    mapping = values if isinstance(values, Mapping) else {}
+    return {
+        "intra_rnn1": _normalize_threshold_entry(mapping.get("intra_rnn1"), default_x, default_h),
+        "intra_rnn2": _normalize_threshold_entry(mapping.get("intra_rnn2"), default_x, default_h),
+        "inter_rnn1": _normalize_threshold_entry(mapping.get("inter_rnn1"), default_x, default_h),
+        "inter_rnn2": _normalize_threshold_entry(mapping.get("inter_rnn2"), default_x, default_h),
+    }
 
 
 class ERB(nn.Module):
@@ -90,58 +133,32 @@ class SFE(nn.Module):
 
 class TRA(nn.Module):
     """Temporal Recurrent Attention"""
-    def __init__(self, channels, log_gru_inputs=False, log_file=None, use_custom_gru=False):
+    def __init__(
+        self,
+        channels,
+        gru_factory: Optional[Callable[..., nn.Module]] = None,
+        delta_threshold: Optional[dict[str, Optional[float]]] = None,
+    ):
         super().__init__()
-        gru_cls = CustomGRU if use_custom_gru else nn.GRU
-        self.att_gru = gru_cls(channels, channels*2, 1, batch_first=True)
+        if gru_factory is None:
+            gru_factory = _default_gru_factory
+        threshold_x = (delta_threshold or {}).get("x")
+        threshold_h = (delta_threshold or {}).get("h")
+        self.att_gru = gru_factory(
+            channels,
+            channels * 2,
+            num_layers=1,
+            batch_first=True,
+            threshold_x=threshold_x,
+            threshold_h=threshold_h,
+        )
         self.att_fc = nn.Linear(channels*2, channels)
         self.att_act = nn.Sigmoid()
-        self.log_gru_inputs = log_gru_inputs
-        self.log_file = log_file
-        self._log_keys = ("x", "h")
-        self._log_paths: dict[str, str] | None = None
-        self._log_buffers: dict[str, list] | None = None
-        if self.log_gru_inputs and self.log_file is not None:
-            base, ext = os.path.splitext(self.log_file)
-            ext = ext if ext else ".pkl"
-            self._log_paths = {
-                "x": f"{base}_x{ext}",
-                "h": f"{base}_h{ext}",
-            }
-            for path in self._log_paths.values():
-                directory = os.path.dirname(path)
-                if directory:
-                    os.makedirs(directory, exist_ok=True)
-            self._log_buffers = {key: [] for key in self._log_keys}
 
     def forward(self, x):
         """x: (B,C,T,F)"""
         zt = torch.mean(x.pow(2), dim=-1)  # (B,C,T)
-        gru_input = zt.transpose(1, 2)
-        logging_active = (
-            self.log_gru_inputs
-            and self.log_file is not None
-            and not self.training
-            and self._log_buffers is not None
-        )
-        if logging_active:
-            x_vectors = gru_input.detach().cpu().reshape(-1, gru_input.shape[-1]).numpy()
-            self._log_buffers["x"].append(x_vectors)
-        at = self.att_gru(gru_input)[0]
-        if logging_active:
-            h_vectors = at.detach().cpu().reshape(-1, at.shape[-1]).numpy()
-            self._log_buffers["h"].append(h_vectors)
-            if self._log_paths is not None:
-                import pickle
-
-                for key, path in self._log_paths.items():
-                    buffers = self._log_buffers.get(key, [])
-                    if not buffers:
-                        continue
-                    payload = np.concatenate(buffers, axis=0)
-                    with open(path, 'wb') as f:
-                        pickle.dump(payload, f)
-                self._log_buffers = {key: [] for key in self._log_keys}
+        at = self.att_gru(zt.transpose(1,2))[0]
         at = self.att_fc(at).transpose(1,2)
         at = self.att_act(at)
         At = at[..., None]  # (B,C,T,1)
@@ -167,8 +184,18 @@ class ConvBlock(nn.Module):
 
 class GTConvBlock(nn.Module):
     """Group Temporal Convolution"""
-    def __init__(self, in_channels, hidden_channels, kernel_size, stride, padding, dilation,
-                 use_deconv=False, log_gru_inputs=False, log_file=None, use_custom_gru=False):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        use_deconv=False,
+        gru_factory: Optional[Callable[..., nn.Module]] = None,
+        tra_threshold: Optional[dict[str, Optional[float]]] = None,
+    ):
         super().__init__()
         self.use_deconv = use_deconv
         self.pad_size = (kernel_size[0]-1) * dilation[0]
@@ -189,8 +216,7 @@ class GTConvBlock(nn.Module):
         self.point_conv2 = conv_module(hidden_channels, in_channels//2, 1)
         self.point_bn2 = nn.BatchNorm2d(in_channels//2)
         
-        self.tra = TRA(in_channels//2, log_gru_inputs=log_gru_inputs, log_file=log_file,
-                       use_custom_gru=use_custom_gru)
+        self.tra = TRA(in_channels//2, gru_factory=gru_factory, delta_threshold=tra_threshold)
 
     def shuffle(self, x1, x2):
         """x1, x2: (B,C,T,F)"""
@@ -227,26 +253,35 @@ class GRNN(nn.Module):
         bidirectional=False,
         log_gru_inputs=False,
         log_file=None,
-        use_custom_gru=False,
+        gru_factory: Optional[Callable[..., nn.Module]] = None,
+        rnn_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirectional
-        gru_cls = CustomGRU if use_custom_gru else nn.GRU
-        self.rnn1 = gru_cls(
-            input_size // 2,
-            hidden_size // 2,
-            num_layers,
+        if gru_factory is None:
+            gru_factory = _default_gru_factory
+        thresholds = list(rnn_thresholds) if rnn_thresholds is not None else [{"x": None, "h": None}] * 2
+        while len(thresholds) < 2:
+            thresholds.append({"x": None, "h": None})
+        self.rnn1 = gru_factory(
+            input_size//2,
+            hidden_size//2,
+            num_layers=num_layers,
             batch_first=batch_first,
             bidirectional=bidirectional,
+            threshold_x=thresholds[0].get("x"),
+            threshold_h=thresholds[0].get("h"),
         )
-        self.rnn2 = gru_cls(
-            input_size // 2,
-            hidden_size // 2,
-            num_layers,
+        self.rnn2 = gru_factory(
+            input_size//2,
+            hidden_size//2,
+            num_layers=num_layers,
             batch_first=batch_first,
             bidirectional=bidirectional,
+            threshold_x=thresholds[1].get("x"),
+            threshold_h=thresholds[1].get("h"),
         )
         self.log_gru_inputs = log_gru_inputs
         self.log_file = log_file
@@ -319,11 +354,191 @@ class GRNN(nn.Module):
                     pickle.dump(payload, f)
             self._log_buffers = {key: [] for key in self._log_keys}
         return y, h
+
+
+class DeltaGRU(nn.Module):
+    """
+    Wraps nn.GRU but conditionally reuses previous inputs/hidden states based on per-element deltas.
+
+    For each feature, if |x(t) - x(t-1)| < threshold_x we reuse x(t-1); otherwise we keep x(t).
+    The same per-element rule applies to h(t-1) vs h(t-2) with threshold_h.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int = 1,
+        bias: bool = True,
+        batch_first: bool = False,
+        dropout: float = 0.0,
+        bidirectional: bool = False,
+        threshold_x: Optional[float] = None,
+        threshold_h: Optional[float] = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        super().__init__()
+
+        factory_kwargs = {}
+        if device is not None:
+            factory_kwargs["device"] = device
+        if dtype is not None:
+            factory_kwargs["dtype"] = dtype
+
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=False,
+            dropout=dropout,
+            bidirectional=bidirectional,
+            **factory_kwargs,
+        )
+        self.batch_first = batch_first
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_directions = 2 if bidirectional else 1
+        self.threshold_x = threshold_x
+        self.threshold_h = threshold_h
+
+    def forward(self, x: torch.Tensor, h0: Optional[torch.Tensor] = None):
+        if x.dim() != 3:
+            raise ValueError(f"Expected 3-D input (B,T,C) or (T,B,C), got {tuple(x.shape)}.")
+
+        self.gru.flatten_parameters()
+        time_major = x.transpose(0, 1) if self.batch_first else x  # (T,B,C)
+        seq_len, batch_size, _ = time_major.shape
+
+        if h0 is None:
+            h0 = self._init_hidden(batch_size, x)
+
+        if self.num_directions == 1:
+            outputs, h_last = self._run_direction(time_major, h0, reverse=False)
+        else:
+            h0_view = h0.reshape(self.num_layers, self.num_directions, batch_size, self.hidden_size)
+            fwd_outputs, fwd_hidden = self._run_direction(time_major, h0_view[:, 0], reverse=False)
+            bwd_outputs, bwd_hidden = self._run_direction(time_major.flip(0), h0_view[:, 1], reverse=True)
+            outputs = torch.cat([fwd_outputs, bwd_outputs], dim=-1)
+            h_last = torch.stack([fwd_hidden, bwd_hidden], dim=1).reshape(
+                self.num_layers * self.num_directions, batch_size, self.hidden_size
+            )
+
+        output = outputs.transpose(0, 1) if self.batch_first else outputs
+        return output, h_last
+
+    def _init_hidden(self, batch_size: int, reference: torch.Tensor) -> torch.Tensor:
+        device = reference.device
+        dtype = reference.dtype
+        return torch.zeros(
+            self.num_layers * self.num_directions,
+            batch_size,
+            self.hidden_size,
+            device=device,
+            dtype=dtype,
+        )
+
+    def _threshold_active(self, value: Optional[float]) -> bool:
+        return value is not None and value > 0
+
+    def _run_direction(
+        self,
+        seq: torch.Tensor,
+        h0: torch.Tensor,
+        reverse: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        seq_len, batch_size, _ = seq.shape
+        prev_x_actual: Optional[torch.Tensor] = None
+        prev_hidden = [h0[layer] for layer in range(self.num_layers)]
+        prev_prev_hidden: list[Optional[torch.Tensor]] = [None] * self.num_layers
+        outputs: list[torch.Tensor] = []
+
+        for t in range(seq_len):
+            x_curr_actual = seq[t]
+            x_t = self._gate_input(x_curr_actual, prev_x_actual)
+            prev_x_actual = x_curr_actual
+
+            layer_input = x_t
+            for layer in range(self.num_layers):
+                h_prev = prev_hidden[layer]
+                h_prev_prev = prev_prev_hidden[layer]
+                h_in = self._gate_hidden(h_prev, h_prev_prev)
+                weight_ih, weight_hh, bias_ih, bias_hh = self._get_gru_params(layer, reverse)
+                layer_input = self._gru_cell(layer_input, h_in, weight_ih, weight_hh, bias_ih, bias_hh)
+                prev_prev_hidden[layer] = h_prev
+                prev_hidden[layer] = layer_input
+            outputs.append(layer_input)
+
+        outputs_tensor = torch.stack(outputs, dim=0)
+        if reverse:
+            outputs_tensor = outputs_tensor.flip(0)
+        hidden_tensor = torch.stack(prev_hidden, dim=0)
+        return outputs_tensor, hidden_tensor
+
+    def _get_gru_params(self, layer: int, reverse: bool):
+        suffix = "" if not reverse else "_reverse"
+        weight_ih = getattr(self.gru, f"weight_ih_l{layer}{suffix}")
+        weight_hh = getattr(self.gru, f"weight_hh_l{layer}{suffix}")
+        bias_ih = getattr(self.gru, f"bias_ih_l{layer}{suffix}", None)
+        bias_hh = getattr(self.gru, f"bias_hh_l{layer}{suffix}", None)
+        return weight_ih, weight_hh, bias_ih, bias_hh
+
+    def _gru_cell(
+        self,
+        input_t: torch.Tensor,
+        hidden: torch.Tensor,
+        weight_ih: torch.Tensor,
+        weight_hh: torch.Tensor,
+        bias_ih: Optional[torch.Tensor],
+        bias_hh: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        gi = torch.matmul(input_t, weight_ih.t())
+        gh = torch.matmul(hidden, weight_hh.t())
+        if bias_ih is not None:
+            gi = gi + bias_ih
+        if bias_hh is not None:
+            gh = gh + bias_hh
+        i_r, i_z, i_n = gi.chunk(3, dim=1)
+        h_r, h_z, h_n = gh.chunk(3, dim=1)
+        resetgate = torch.sigmoid(i_r + h_r)
+        updategate = torch.sigmoid(i_z + h_z)
+        newgate = torch.tanh(i_n + resetgate * h_n)
+        hy = newgate + updategate * (hidden - newgate)
+        return hy
+
+    def _gate_input(self, current: torch.Tensor, prev_actual: Optional[torch.Tensor]) -> torch.Tensor:
+        if prev_actual is None or not self._threshold_active(self.threshold_x):
+            return current
+        delta = (current - prev_actual).abs()
+        reuse_prev = delta < self.threshold_x
+        return torch.where(reuse_prev, prev_actual, current)
+
+    def _gate_hidden(
+        self,
+        prev_actual: torch.Tensor,
+        prev_prev_actual: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if prev_prev_actual is None or not self._threshold_active(self.threshold_h):
+            return prev_actual
+        delta = (prev_actual - prev_prev_actual).abs()
+        reuse_prev = delta < self.threshold_h
+        return torch.where(reuse_prev, prev_prev_actual, prev_actual)
     
     
 class DPGRNN(nn.Module):
     """Grouped Dual-path RNN"""
-    def __init__(self, input_size, width, hidden_size, log_gru_inputs=False, log_file_base=None, use_custom_gru=False):
+    def __init__(
+        self,
+        input_size,
+        width,
+        hidden_size,
+        log_gru_inputs=False,
+        log_file_base=None,
+        gru_factory: Optional[Callable[..., nn.Module]] = None,
+        intra_rnn_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+        inter_rnn_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+    ):
         super().__init__()
         self.input_size = input_size
         self.width = width
@@ -338,13 +553,27 @@ class DPGRNN(nn.Module):
             intra_log = None
             inter_log = None
 
-        self.intra_rnn = GRNN(input_size=input_size, hidden_size=hidden_size//2, bidirectional=True,
-                              log_gru_inputs=log_gru_inputs, log_file=intra_log, use_custom_gru=use_custom_gru)
+        self.intra_rnn = GRNN(
+            input_size=input_size,
+            hidden_size=hidden_size//2,
+            bidirectional=True,
+            log_gru_inputs=log_gru_inputs,
+            log_file=intra_log,
+            gru_factory=gru_factory,
+            rnn_thresholds=intra_rnn_thresholds,
+        )
         self.intra_fc = nn.Linear(hidden_size, hidden_size)
         self.intra_ln = nn.LayerNorm((width, hidden_size), eps=1e-8)
 
-        self.inter_rnn = GRNN(input_size=input_size, hidden_size=hidden_size, bidirectional=False,
-                              log_gru_inputs=log_gru_inputs, log_file=inter_log, use_custom_gru=use_custom_gru)
+        self.inter_rnn = GRNN(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            bidirectional=False,
+            log_gru_inputs=log_gru_inputs,
+            log_file=inter_log,
+            gru_factory=gru_factory,
+            rnn_thresholds=inter_rnn_thresholds,
+        )
         self.inter_fc = nn.Linear(hidden_size, hidden_size)
         self.inter_ln = nn.LayerNorm(((width, hidden_size)), eps=1e-8)
     
@@ -375,20 +604,24 @@ class DPGRNN(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, log_gru_inputs=False, tra_log_files=None, use_custom_gru=False):
+    def __init__(
+        self,
+        tra_gru_factory: Optional[Callable[..., nn.Module]] = None,
+        tra_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+    ):
         super().__init__()
-        tra_logs = tra_log_files or [None] * 3
-        if len(tra_logs) != 3:
-            raise ValueError("tra_log_files must provide 3 entries for Encoder GTConvBlocks")
+        thresholds = list(tra_thresholds) if tra_thresholds is not None else [{"x": None, "h": None}] * 3
+        while len(thresholds) < 3:
+            thresholds.append({"x": None, "h": None})
         self.en_convs = nn.ModuleList([
             ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[0], use_custom_gru=use_custom_gru),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[1], use_custom_gru=use_custom_gru),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[2], use_custom_gru=use_custom_gru)
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2])
         ])
 
     def forward(self, x):
@@ -400,18 +633,22 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, log_gru_inputs=False, tra_log_files=None, use_custom_gru=False):
+    def __init__(
+        self,
+        tra_gru_factory: Optional[Callable[..., nn.Module]] = None,
+        tra_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+    ):
         super().__init__()
-        tra_logs = tra_log_files or [None] * 3
-        if len(tra_logs) != 3:
-            raise ValueError("tra_log_files must provide 3 entries for Decoder GTConvBlocks")
+        thresholds = list(tra_thresholds) if tra_thresholds is not None else [{"x": None, "h": None}] * 3
+        while len(thresholds) < 3:
+            thresholds.append({"x": None, "h": None})
         self.de_convs = nn.ModuleList([
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[0], use_custom_gru=use_custom_gru),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[1], use_custom_gru=use_custom_gru),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True,
-                        log_gru_inputs=log_gru_inputs, log_file=tra_logs[2], use_custom_gru=use_custom_gru),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2]),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
             ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=True)
         ])
@@ -481,9 +718,13 @@ class GTCRN(nn.Module):
         preprocess=None,
         log_gru_inputs=False,
         log_file=None,
-        use_custom_gru=False,
+        use_delta_gru: bool = False,
+        delta_gru_threshold_x: Optional[float] = None,
+        delta_gru_threshold_h: Optional[float] = None,
+        delta_gru_thresholds: Optional[Mapping[str, Any]] = None,
     ):
         super().__init__()
+        self._use_delta_gru = use_delta_gru
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
@@ -497,34 +738,73 @@ class GTCRN(nn.Module):
         self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
         self.sfe = SFE(3, 1)
 
+        gru_factory = self._build_gru_factory(use_delta_gru)
+
+        base_thresh_x = delta_gru_threshold_x
+        base_thresh_h = delta_gru_threshold_h
+        thresholds_cfg = delta_gru_thresholds if isinstance(delta_gru_thresholds, Mapping) else {}
+
+        encoder_tra_thresholds = _normalize_threshold_list(
+            thresholds_cfg.get("encoder_tra_blocks"),
+            3,
+            base_thresh_x,
+            base_thresh_h,
+        )
+        decoder_tra_thresholds = _normalize_threshold_list(
+            thresholds_cfg.get("decoder_tra_blocks"),
+            3,
+            base_thresh_x,
+            base_thresh_h,
+        )
+        dp1_thresholds = _normalize_dp_thresholds(thresholds_cfg.get("dpgrnn1"), base_thresh_x, base_thresh_h)
+        dp2_thresholds = _normalize_dp_thresholds(thresholds_cfg.get("dpgrnn2"), base_thresh_x, base_thresh_h)
+
+        self.encoder = Encoder(tra_gru_factory=gru_factory, tra_thresholds=encoder_tra_thresholds)
         encoder_width = self._compute_encoder_width(self.erb.output_bins)
 
-        encoder_tra_logs = None
-        decoder_tra_logs = None
-
-        # If a log file base was provided, create distinct bases for every logging site
+        # If a log file base was provided, create distinct bases for dpgrnn1 and dpgrnn2
         if log_file is not None:
             import os
-
             root, ext = os.path.splitext(log_file)
-            ext = ext if ext else ".pkl"
             dp1_base = f"{root}_dp1{ext}"
             dp2_base = f"{root}_dp2{ext}"
-            encoder_tra_logs = [f"{root}_tra_enc{i}{ext}" for i in range(3)]
-            decoder_tra_logs = [f"{root}_tra_dec{i}{ext}" for i in range(3)]
         else:
             dp1_base = None
             dp2_base = None
 
-        self.encoder = Encoder(log_gru_inputs=log_gru_inputs, tra_log_files=encoder_tra_logs,
-                               use_custom_gru=use_custom_gru)
-
-        self.dpgrnn1 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp1_base,
-                              use_custom_gru=use_custom_gru)
-        self.dpgrnn2 = DPGRNN(16, encoder_width, 16, log_gru_inputs=log_gru_inputs, log_file_base=dp2_base,
-                              use_custom_gru=use_custom_gru)
-        self.decoder = Decoder(log_gru_inputs=log_gru_inputs, tra_log_files=decoder_tra_logs,
-                               use_custom_gru=use_custom_gru)
+        self.dpgrnn1 = DPGRNN(
+            16,
+            encoder_width,
+            16,
+            log_gru_inputs=log_gru_inputs,
+            log_file_base=dp1_base,
+            gru_factory=gru_factory,
+            intra_rnn_thresholds=[
+                dp1_thresholds["intra_rnn1"],
+                dp1_thresholds["intra_rnn2"],
+            ],
+            inter_rnn_thresholds=[
+                dp1_thresholds["inter_rnn1"],
+                dp1_thresholds["inter_rnn2"],
+            ],
+        )
+        self.dpgrnn2 = DPGRNN(
+            16,
+            encoder_width,
+            16,
+            log_gru_inputs=log_gru_inputs,
+            log_file_base=dp2_base,
+            gru_factory=gru_factory,
+            intra_rnn_thresholds=[
+                dp2_thresholds["intra_rnn1"],
+                dp2_thresholds["intra_rnn2"],
+            ],
+            inter_rnn_thresholds=[
+                dp2_thresholds["inter_rnn1"],
+                dp2_thresholds["inter_rnn2"],
+            ],
+        )
+        self.decoder = Decoder(tra_gru_factory=gru_factory, tra_thresholds=decoder_tra_thresholds)
 
         self.mask = Mask()
 
@@ -571,6 +851,49 @@ class GTCRN(nn.Module):
         output = torch.nn.functional.pad(output, (0, n_samples-output.shape[1]))
 
         return output
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        if self._use_delta_gru:
+            state_dict = self._ensure_delta_prefixes(state_dict)
+        return super().load_state_dict(state_dict, strict=strict)
+
+    @staticmethod
+    def _ensure_delta_prefixes(state_dict):
+        if any(".gru." in key for key in state_dict.keys()):
+            return state_dict
+        new_state = state_dict.__class__()
+        target_names = {"att_gru", "rnn1", "rnn2"}
+        for key, value in state_dict.items():
+            parts = key.split(".")
+            for idx, part in enumerate(parts):
+                if part in target_names:
+                    if idx + 1 < len(parts) and parts[idx + 1] == "gru":
+                        break
+                    parts = parts[:idx + 1] + ["gru"] + parts[idx + 1:]
+                    break
+            new_key = ".".join(parts)
+            new_state[new_key] = value
+        return new_state
+
+    @staticmethod
+    def _build_gru_factory(use_delta_gru: bool) -> Callable[..., nn.Module]:
+        if not use_delta_gru:
+            print("Using standard GRU")
+            return _default_gru_factory
+
+        def factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
+            threshold_x = kwargs.pop("threshold_x", None)
+            threshold_h = kwargs.pop("threshold_h", None)
+            print(f"Using DeltaGRU with threshold_x={threshold_x}, threshold_h={threshold_h}")
+            return DeltaGRU(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                threshold_x=threshold_x,
+                threshold_h=threshold_h,
+                **kwargs,
+            )
+
+        return factory
 
     @classmethod
     def _compute_erb_subbands(cls, n_fft):
