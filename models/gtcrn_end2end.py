@@ -138,12 +138,30 @@ class TRA(nn.Module):
         channels,
         gru_factory: Optional[Callable[..., nn.Module]] = None,
         delta_threshold: Optional[dict[str, Optional[float]]] = None,
+        log_gru_inputs: bool = False,
+        log_file_base: Optional[str] = None,
     ):
         super().__init__()
         if gru_factory is None:
             gru_factory = _default_gru_factory
         threshold_x = (delta_threshold or {}).get("x")
         threshold_h = (delta_threshold or {}).get("h")
+        self.log_gru_inputs = log_gru_inputs
+        self.log_file_base = log_file_base
+        self._log_paths: dict[str, str] | None = None
+        self._log_buffers: dict[str, list[np.ndarray]] | None = None
+        if self.log_gru_inputs and self.log_file_base is not None:
+            base, ext = os.path.splitext(self.log_file_base)
+            ext = ext if ext else ".pkl"
+            self._log_paths = {
+                "x": f"{base}_x{ext}",
+                "h": f"{base}_h{ext}",
+            }
+            for path in self._log_paths.values():
+                directory = os.path.dirname(path)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
+            self._log_buffers = {key: [] for key in self._log_paths}
         self.att_gru = gru_factory(
             channels,
             channels * 2,
@@ -157,8 +175,30 @@ class TRA(nn.Module):
 
     def forward(self, x):
         """x: (B,C,T,F)"""
+        logging_active = (
+            self.log_gru_inputs
+            and self._log_paths is not None
+            and self._log_buffers is not None
+            and not self.training
+        )
         zt = torch.mean(x.pow(2), dim=-1)  # (B,C,T)
-        at = self.att_gru(zt.transpose(1,2))[0]
+        gru_input = zt.transpose(1,2)  # (B,T,C)
+        if logging_active:
+            x_vectors = gru_input.detach().cpu().reshape(-1, gru_input.shape[-1]).numpy()
+            self._log_buffers["x"].append(x_vectors)
+        at = self.att_gru(gru_input)[0]
+        if logging_active:
+            h_vectors = at.detach().cpu().reshape(-1, at.shape[-1]).numpy()
+            self._log_buffers["h"].append(h_vectors)
+            import pickle
+            for key, path in self._log_paths.items():
+                buffers = self._log_buffers.get(key, [])
+                if not buffers:
+                    continue
+                payload = np.concatenate(buffers, axis=0)
+                with open(path, "wb") as f:
+                    pickle.dump(payload, f)
+            self._log_buffers = {key: [] for key in self._log_paths}
         at = self.att_fc(at).transpose(1,2)
         at = self.att_act(at)
         At = at[..., None]  # (B,C,T,1)
@@ -195,6 +235,8 @@ class GTConvBlock(nn.Module):
         use_deconv=False,
         gru_factory: Optional[Callable[..., nn.Module]] = None,
         tra_threshold: Optional[dict[str, Optional[float]]] = None,
+        log_gru_inputs: bool = False,
+        log_file_base: Optional[str] = None,
     ):
         super().__init__()
         self.use_deconv = use_deconv
@@ -216,7 +258,13 @@ class GTConvBlock(nn.Module):
         self.point_conv2 = conv_module(hidden_channels, in_channels//2, 1)
         self.point_bn2 = nn.BatchNorm2d(in_channels//2)
         
-        self.tra = TRA(in_channels//2, gru_factory=gru_factory, delta_threshold=tra_threshold)
+        self.tra = TRA(
+            in_channels//2,
+            gru_factory=gru_factory,
+            delta_threshold=tra_threshold,
+            log_gru_inputs=log_gru_inputs,
+            log_file_base=log_file_base,
+        )
 
     def shuffle(self, x1, x2):
         """x1, x2: (B,C,T,F)"""
@@ -608,20 +656,28 @@ class Encoder(nn.Module):
         self,
         tra_gru_factory: Optional[Callable[..., nn.Module]] = None,
         tra_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+        log_gru_inputs: bool = False,
+        tra_log_bases: Optional[Sequence[Optional[str]]] = None,
     ):
         super().__init__()
         thresholds = list(tra_thresholds) if tra_thresholds is not None else [{"x": None, "h": None}] * 3
         while len(thresholds) < 3:
             thresholds.append({"x": None, "h": None})
+        log_bases = list(tra_log_bases) if tra_log_bases is not None else [None] * 3
+        while len(log_bases) < 3:
+            log_bases.append(None)
         self.en_convs = nn.ModuleList([
             ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0]),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[0]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1]),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[1]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2])
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[2])
         ])
 
     def forward(self, x):
@@ -637,18 +693,26 @@ class Decoder(nn.Module):
         self,
         tra_gru_factory: Optional[Callable[..., nn.Module]] = None,
         tra_thresholds: Optional[Sequence[dict[str, Optional[float]]]] = None,
+        log_gru_inputs: bool = False,
+        tra_log_bases: Optional[Sequence[Optional[str]]] = None,
     ):
         super().__init__()
         thresholds = list(tra_thresholds) if tra_thresholds is not None else [{"x": None, "h": None}] * 3
         while len(thresholds) < 3:
             thresholds.append({"x": None, "h": None})
+        log_bases = list(tra_log_bases) if tra_log_bases is not None else [None] * 3
+        while len(log_bases) < 3:
+            log_bases.append(None)
         self.de_convs = nn.ModuleList([
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0]),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[0],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[0]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1]),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[1],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[1]),
             GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True,
-                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2]),
+                        gru_factory=tra_gru_factory, tra_threshold=thresholds[2],
+                        log_gru_inputs=log_gru_inputs, log_file_base=log_bases[2]),
             ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
             ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=True)
         ])
@@ -759,18 +823,26 @@ class GTCRN(nn.Module):
         dp1_thresholds = _normalize_dp_thresholds(thresholds_cfg.get("dpgrnn1"), base_thresh_x, base_thresh_h)
         dp2_thresholds = _normalize_dp_thresholds(thresholds_cfg.get("dpgrnn2"), base_thresh_x, base_thresh_h)
 
-        self.encoder = Encoder(tra_gru_factory=gru_factory, tra_thresholds=encoder_tra_thresholds)
-        encoder_width = self._compute_encoder_width(self.erb.output_bins)
-
-        # If a log file base was provided, create distinct bases for dpgrnn1 and dpgrnn2
+        encoder_log_bases = None
+        decoder_log_bases = None
+        # If a log file base was provided, create distinct bases for all logging targets
         if log_file is not None:
             import os
             root, ext = os.path.splitext(log_file)
             dp1_base = f"{root}_dp1{ext}"
             dp2_base = f"{root}_dp2{ext}"
+            encoder_log_bases = [f"{root}_enc_tra{i}{ext}" for i in range(3)]
+            decoder_log_bases = [f"{root}_dec_tra{i}{ext}" for i in range(3)]
         else:
             dp1_base = None
             dp2_base = None
+        self.encoder = Encoder(
+            tra_gru_factory=gru_factory,
+            tra_thresholds=encoder_tra_thresholds,
+            log_gru_inputs=log_gru_inputs,
+            tra_log_bases=encoder_log_bases,
+        )
+        encoder_width = self._compute_encoder_width(self.erb.output_bins)
 
         self.dpgrnn1 = DPGRNN(
             16,
@@ -804,7 +876,12 @@ class GTCRN(nn.Module):
                 dp2_thresholds["inter_rnn2"],
             ],
         )
-        self.decoder = Decoder(tra_gru_factory=gru_factory, tra_thresholds=decoder_tra_thresholds)
+        self.decoder = Decoder(
+            tra_gru_factory=gru_factory,
+            tra_thresholds=decoder_tra_thresholds,
+            log_gru_inputs=log_gru_inputs,
+            tra_log_bases=decoder_log_bases,
+        )
 
         self.mask = Mask()
 

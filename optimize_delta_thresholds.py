@@ -217,6 +217,8 @@ class ThresholdOptimizer:
         self.state = build_initial_state(0.0, mode)
         self.params = make_parameters(mode, 0.0)
         self.threshold_columns = self._build_threshold_columns()
+        self._component_prefixes: List[str] = []
+        self._component_weights = self._build_component_weights()
         self.cache: Dict[Tuple, float] = {}
         self.best_metric: Optional[float] = None
         self.best_state: Optional[dict] = None
@@ -312,13 +314,15 @@ class ThresholdOptimizer:
         return bases
 
     def collect_occupancy(self, log_base: Path) -> dict:
-        components = ("x1", "x2", "h1", "h2", "x", "h")
-        per_component: Dict[str, List[Tuple[float, int]]] = {comp: [] for comp in components}
+        components = ("x", "h")
+        per_component: Dict[str, List[Tuple[float, int, float]]] = {comp: [] for comp in components}
         base_map = self._discover_log_bases(log_base)
         if not base_map:
             base_map = {log_base: set()}
         for base, available_components in base_map.items():
-            target_components = sorted(available_components) if available_components else components
+            target_components = sorted(available_components) if available_components else ()
+            if not target_components:
+                continue
             for comp in target_components:
                 try:
                     stats = compute_occupancy(str(base), self.occupancy_threshold, component=comp)
@@ -332,35 +336,79 @@ class ThresholdOptimizer:
                     samples = int(samples_val)
                 except (TypeError, ValueError):
                     samples = 0
-                per_component[comp].append((mean_occ, samples))
+                key = self._component_key(base, comp)
+                weight = self._component_weights.get(key, 1.0)
+                bucket = "x" if comp.startswith("x") else "h"
+                per_component[bucket].append((mean_occ, samples, weight))
                 if self.verbose:
                     label = f"{base.stem} component {comp}"
                     if samples > 0:
                         print(f"[opt] occupancy for {label}: {mean_occ:.4f} ({samples} seqs)")
                     else:
                         print(f"[opt] occupancy for {label}: {mean_occ:.4f}")
-        summary: Dict[str, Optional[float]] = {f"occ_{comp}": None for comp in components}
-        occ_values: List[float] = []
-        for comp in components:
-            entries = per_component[comp]
+        summary: Dict[str, Optional[float]] = {"occ_x": None, "occ_y": None, "occ_tot": None}
+
+        def _weighted_mean(entries: List[Tuple[float, int, float]]) -> Optional[float]:
             if not entries:
-                continue
-            total_samples = sum(max(samples, 0) for _, samples in entries)
-            if total_samples > 0:
-                comp_mean = sum(mean * samples for mean, samples in entries) / total_samples
-            else:
-                comp_mean = sum(mean for mean, _ in entries) / len(entries)
-            summary[f"occ_{comp}"] = comp_mean
-            occ_values.append(comp_mean)
-        if occ_values:
-            summary["occ_min"] = min(occ_values)
-            summary["occ_max"] = max(occ_values)
-            summary["occ_mean"] = sum(occ_values) / len(occ_values)
+                return None
+            total_weight = 0.0
+            accum = 0.0
+            for mean, samples, weight in entries:
+                if samples <= 0 or weight <= 0:
+                    continue
+                total_weight += samples * weight
+                accum += mean * samples * weight
+            if total_weight > 0:
+                return accum / total_weight
+            # fallback: equal-weight average
+            return sum(mean for mean, _, _ in entries) / len(entries)
+
+        occ_x = _weighted_mean(per_component["x"])
+        occ_h = _weighted_mean(per_component["h"])
+        if occ_x is not None:
+            summary["occ_x"] = occ_x
+        if occ_h is not None:
+            summary["occ_y"] = occ_h
+        if occ_x is not None and occ_h is not None:
+            summary["occ_tot"] = 0.5 * (occ_x + occ_h)
+        elif occ_x is not None:
+            summary["occ_tot"] = occ_x
+        elif occ_h is not None:
+            summary["occ_tot"] = occ_h
         else:
-            summary["occ_min"] = summary["occ_max"] = summary["occ_mean"] = None
             if self.verbose:
                 print(f"[opt] warning: no GRU occupancy data found for {log_base}")
         return summary
+
+    def _build_component_weights(self) -> Dict[str, float]:
+        weights: Dict[str, float] = {}
+        prefixes: List[str] = []
+        # Encoder TRA blocks
+        for idx in range(3):
+            prefix = f"enc_tra{idx}"
+            prefixes.append(prefix)
+            weights[f"{prefix}_x"] = 8.0
+            weights[f"{prefix}_h"] = 16.0
+        # Decoder TRA blocks
+        for idx in range(3):
+            prefix = f"dec_tra{idx}"
+            prefixes.append(prefix)
+            weights[f"{prefix}_x"] = 8.0
+            weights[f"{prefix}_h"] = 16.0
+        # Dual-path GRNN components
+        for dp in ("dp1", "dp2"):
+            for stage in ("intra", "inter"):
+                prefix = f"{dp}_{stage}"
+                prefixes.append(prefix)
+                weights[f"{prefix}_x1"] = 8.0
+                weights[f"{prefix}_x2"] = 8.0
+                weights[f"{prefix}_h1"] = 8.0
+                weights[f"{prefix}_h2"] = 8.0
+        # Default fallbacks when prefixes do not match
+        for comp in ("x", "h", "x1", "x2", "h1", "h2"):
+            weights.setdefault(comp, 1.0)
+        self._component_prefixes = prefixes
+        return weights
 
     def _build_threshold_columns(self) -> List[str]:
         columns = ["threshold_global", "threshold_x", "threshold_h"]
@@ -426,6 +474,13 @@ class ThresholdOptimizer:
                 row[f"{section}_{name}_x"] = values.get("x")
                 row[f"{section}_{name}_h"] = values.get("h")
 
+    def _component_key(self, base: Path, component: str) -> str:
+        stem = base.stem
+        for prefix in self._component_prefixes:
+            if stem.endswith(prefix):
+                return f"{prefix}_{component}"
+        return component
+
     def run_coordinate(self):
         current = self.evaluate()
         for param in self.params:
@@ -440,6 +495,9 @@ class ThresholdOptimizer:
     def run_sweep(self):
         if self.mode == "split":
             self._run_sweep_split()
+            return
+        if self.mode == "per_gru":
+            self._run_sweep_per_gru()
             return
         rows = []
         occ_targets = []
@@ -489,18 +547,7 @@ class ThresholdOptimizer:
             if stop:
                 break
             value += step
-        if rows and self.csv_output is not None:
-            for row, log_base in occ_targets:
-                try:
-                    row.update(self.collect_occupancy(log_base))
-                except FileNotFoundError:
-                    if self.verbose:
-                        print(f"[opt] warning: occupancy logs missing for {log_base}")
-            self.csv_output.parent.mkdir(parents=True, exist_ok=True)
-            with self.csv_output.open("w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows(rows)
+        self._write_csv(rows, occ_targets)
         self.best_metric = best_metric if best_metric != -float("inf") else None
         self.best_state = best_state
         if self.apply_best_to is not None and best_state is not None:
@@ -574,18 +621,76 @@ class ThresholdOptimizer:
                 break
             h_value += step
 
-        if rows and self.csv_output is not None:
-            for row, log_base in occ_targets:
-                try:
-                    row.update(self.collect_occupancy(log_base))
-                except FileNotFoundError:
-                    if self.verbose:
-                        print(f"[opt] warning: occupancy logs missing for {log_base}")
-            self.csv_output.parent.mkdir(parents=True, exist_ok=True)
-            with self.csv_output.open("w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows(rows)
+        self._write_csv(rows, occ_targets)
+        self.best_metric = best_metric if best_metric != -float("inf") else None
+        self.best_state = best_state
+        if self.apply_best_to is not None and best_state is not None:
+            cfg_dict = build_thresholds_dict(best_state)
+            writer = ConfigWriter(self.apply_best_to)
+            writer.write_to(self.apply_best_to, cfg_dict)
+
+    def _run_sweep_per_gru(self):
+        rows = []
+        occ_targets = []
+        step = max(self.min_step, 1e-9)
+        best_metric = -float("inf")
+        best_state = None
+        baseline_metric: Optional[float] = None
+        start_time = time.time()
+        # Reset state so all thresholds start at zero for the per-GRU exploration
+        self.state = build_initial_state(0.0, self.mode)
+
+        stop_all = False
+        for param in self.params:
+            if stop_all:
+                break
+            value = 0.0
+            while value <= self.max_threshold + 1e-9:
+                iter_start = time.time()
+                param.setter(self.state, value)
+                log_base = self.pickle_root / f"sweep_run_{self.run_counter}"
+                self.run_counter += 1
+                metric = self.evaluate(log_base=log_base)
+                if baseline_metric is None:
+                    baseline_metric = metric
+                row = {"threshold": value, "metric": metric}
+                row.update(self._threshold_config_row())
+                rows.append(row)
+                occ_targets.append((row, log_base.parent / log_base.name))
+                if metric > best_metric:
+                    best_metric = metric
+                    best_state = copy.deepcopy(self.state)
+                if self.verbose:
+                    elapsed = time.time() - iter_start
+                    print(
+                        f"[opt] sweep {param.name}={value:.4f} -> metric {metric:.4f} "
+                        f"(step took {elapsed:.1f}s)"
+                    )
+                stop_inner = False
+                if metric < self.min_metric:
+                    stop_inner = True
+                    stop_all = True
+                if (
+                    not stop_inner
+                    and baseline_metric is not None
+                    and self.min_metric_drop is not None
+                ):
+                    drop_limit = baseline_metric * (1.0 - self.min_metric_drop)
+                    if metric < drop_limit:
+                        if self.verbose:
+                            total_elapsed = time.time() - start_time
+                            print(
+                                f"[opt] stopping sweep of {param.name} at {value:.4f} "
+                                f"after drop {baseline_metric - metric:.4f} "
+                                f"(elapsed {total_elapsed/60:.1f} min)"
+                            )
+                        stop_inner = True
+                if stop_inner:
+                    break
+                value += step
+            # Reset parameter before moving to the next one
+            param.setter(self.state, 0.0)
+        self._write_csv(rows, occ_targets)
         self.best_metric = best_metric if best_metric != -float("inf") else None
         self.best_state = best_state
         if self.apply_best_to is not None and best_state is not None:
@@ -600,6 +705,25 @@ class ThresholdOptimizer:
             self.run_sweep()
         else:
             raise ValueError(f"Unknown strategy {self.strategy}")
+
+    def _write_csv(self, rows: List[dict], occ_targets: List[Tuple[dict, Path]]):
+        if not rows or self.csv_output is None:
+            return
+        fieldnames = ["threshold"] + self.threshold_columns + ["metric", "occ_x", "occ_y", "occ_tot"]
+        for row, log_base in occ_targets:
+            try:
+                row.update(self.collect_occupancy(log_base))
+            except FileNotFoundError:
+                if self.verbose:
+                    print(f"[opt] warning: occupancy logs missing for {log_base}")
+            except Exception as exc:
+                if self.verbose:
+                    print(f"[opt] warning: failed occupancy aggregation for {log_base}: {exc}")
+        self.csv_output.parent.mkdir(parents=True, exist_ok=True)
+        with self.csv_output.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
 
 def main():
