@@ -190,6 +190,17 @@ class ThresholdOptimizer:
         self.infer_writer = ConfigWriter(infer_config)
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.pickle_root = self.work_dir / "pkls"
+        if self.pickle_root.exists():
+            for item in self.pickle_root.glob("*"):
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    for sub in item.glob("*"):
+                        sub.unlink(missing_ok=True)
+                    item.rmdir()
+        else:
+            self.pickle_root.mkdir()
         self.max_threshold = max_threshold
         self.decay_factor = decay_factor
         self.min_step = min_step
@@ -205,6 +216,7 @@ class ThresholdOptimizer:
         self.csv_output = csv_output
         self.state = build_initial_state(0.0, mode)
         self.params = make_parameters(mode, 0.0)
+        self.threshold_columns = self._build_threshold_columns()
         self.cache: Dict[Tuple, float] = {}
         self.best_metric: Optional[float] = None
         self.best_state: Optional[dict] = None
@@ -265,24 +277,154 @@ class ThresholdOptimizer:
         param.setter(self.state, best_val)
         return best_metric
 
+    def _discover_log_bases(self, log_base: Path) -> Dict[Path, set[str]]:
+        suffix_map = [
+            ("_x1", "x1"),
+            ("_x2", "x2"),
+            ("_h1", "h1"),
+            ("_h2", "h2"),
+            ("_x", "x"),
+            ("_h", "h"),
+        ]
+        log_dir = log_base.parent
+        if not log_dir.exists():
+            return {}
+        prefix = log_base.stem
+        bases: Dict[Path, set[str]] = {}
+        for path in log_dir.iterdir():
+            if not path.is_file():
+                continue
+            stem = path.stem
+            if not stem.startswith(prefix):
+                continue
+            remainder = stem[len(prefix):]
+            if remainder and remainder[0] not in ("_", "."):
+                continue
+            for suffix, component in suffix_map:
+                if not stem.endswith(suffix):
+                    continue
+                base_stem = stem[:-len(suffix)]
+                ext = path.suffix
+                base_name = f"{base_stem}{ext}" if ext else base_stem
+                base_path = path.parent / base_name
+                bases.setdefault(base_path, set()).add(component)
+                break
+        return bases
+
     def collect_occupancy(self, log_base: Path) -> dict:
         components = ("x1", "x2", "h1", "h2", "x", "h")
-        values: Dict[str, float] = {}
+        per_component: Dict[str, List[Tuple[float, int]]] = {comp: [] for comp in components}
+        base_map = self._discover_log_bases(log_base)
+        if not base_map:
+            base_map = {log_base: set()}
+        for base, available_components in base_map.items():
+            target_components = sorted(available_components) if available_components else components
+            for comp in target_components:
+                try:
+                    stats = compute_occupancy(str(base), self.occupancy_threshold, component=comp)
+                except Exception as exc:
+                    if self.verbose:
+                        print(f"[opt] failed to read occupancy for {base} component {comp}: {exc}")
+                    continue
+                mean_occ = float(stats.get("mean_occupancy", 0.0))
+                samples_val = stats.get("samples", 0)
+                try:
+                    samples = int(samples_val)
+                except (TypeError, ValueError):
+                    samples = 0
+                per_component[comp].append((mean_occ, samples))
+                if self.verbose:
+                    label = f"{base.stem} component {comp}"
+                    if samples > 0:
+                        print(f"[opt] occupancy for {label}: {mean_occ:.4f} ({samples} seqs)")
+                    else:
+                        print(f"[opt] occupancy for {label}: {mean_occ:.4f}")
+        summary: Dict[str, Optional[float]] = {f"occ_{comp}": None for comp in components}
+        occ_values: List[float] = []
         for comp in components:
-            try:
-                stats = compute_occupancy(str(log_base), self.occupancy_threshold, component=comp)
-                values[comp] = stats.get("mean_occupancy", 0.0)
-            except Exception:
+            entries = per_component[comp]
+            if not entries:
                 continue
-        summary = {f"occ_{comp}": values.get(comp) for comp in components}
-        if values:
-            occ_list = list(values.values())
-            summary["occ_min"] = min(occ_list)
-            summary["occ_max"] = max(occ_list)
-            summary["occ_mean"] = sum(occ_list) / len(occ_list)
+            total_samples = sum(max(samples, 0) for _, samples in entries)
+            if total_samples > 0:
+                comp_mean = sum(mean * samples for mean, samples in entries) / total_samples
+            else:
+                comp_mean = sum(mean for mean, _ in entries) / len(entries)
+            summary[f"occ_{comp}"] = comp_mean
+            occ_values.append(comp_mean)
+        if occ_values:
+            summary["occ_min"] = min(occ_values)
+            summary["occ_max"] = max(occ_values)
+            summary["occ_mean"] = sum(occ_values) / len(occ_values)
         else:
             summary["occ_min"] = summary["occ_max"] = summary["occ_mean"] = None
+            if self.verbose:
+                print(f"[opt] warning: no GRU occupancy data found for {log_base}")
         return summary
+
+    def _build_threshold_columns(self) -> List[str]:
+        columns = ["threshold_global", "threshold_x", "threshold_h"]
+        columns.extend(self._block_column_names("encoder_tra", len(self.state["encoder_tra_blocks"])))
+        columns.extend(self._block_column_names("decoder_tra", len(self.state["decoder_tra_blocks"])))
+        dp_components = ("intra_rnn1", "intra_rnn2", "inter_rnn1", "inter_rnn2")
+        columns.extend(self._dict_column_names("dpgrnn1", dp_components))
+        columns.extend(self._dict_column_names("dpgrnn2", dp_components))
+        return columns
+
+    @staticmethod
+    def _block_column_names(prefix: str, count: int) -> List[str]:
+        cols = []
+        for idx in range(count):
+            cols.append(f"{prefix}_{idx}_x")
+            cols.append(f"{prefix}_{idx}_h")
+        return cols
+
+    @staticmethod
+    def _dict_column_names(prefix: str, components: Sequence[str]) -> List[str]:
+        cols = []
+        for name in components:
+            cols.append(f"{prefix}_{name}_x")
+            cols.append(f"{prefix}_{name}_h")
+        return cols
+
+    def _threshold_config_row(self) -> Dict[str, Optional[float]]:
+        row: Dict[str, Optional[float]] = {col: None for col in self.threshold_columns}
+        if self.mode == "global":
+            row["threshold_global"] = self.state["global_x"]
+            return row
+        if self.mode == "split":
+            row["threshold_x"] = self.state["global_x"]
+            row["threshold_h"] = self.state["global_h"]
+            return row
+        if self.mode != "per_gru":
+            return row
+        self._fill_block_thresholds(row, "encoder_tra_blocks", "encoder_tra")
+        self._fill_block_thresholds(row, "decoder_tra_blocks", "decoder_tra")
+        self._fill_dict_thresholds(row, "dpgrnn1")
+        self._fill_dict_thresholds(row, "dpgrnn2")
+        return row
+
+    def _fill_block_thresholds(self, row: dict, section: str, prefix: str):
+        blocks = self.state.get(section, [])
+        for idx, entry in enumerate(blocks):
+            if entry is None:
+                row[f"{prefix}_{idx}_x"] = None
+                row[f"{prefix}_{idx}_h"] = None
+            else:
+                row[f"{prefix}_{idx}_x"] = entry.get("x")
+                row[f"{prefix}_{idx}_h"] = entry.get("h")
+
+    def _fill_dict_thresholds(self, row: dict, section: str):
+        components = ("intra_rnn1", "intra_rnn2", "inter_rnn1", "inter_rnn2")
+        block = self.state.get(section, {})
+        for name in components:
+            values = block.get(name)
+            if values is None:
+                row[f"{section}_{name}_x"] = None
+                row[f"{section}_{name}_h"] = None
+            else:
+                row[f"{section}_{name}_x"] = values.get("x")
+                row[f"{section}_{name}_h"] = values.get("h")
 
     def run_coordinate(self):
         current = self.evaluate()
@@ -296,7 +438,11 @@ class ThresholdOptimizer:
             writer.write_to(self.apply_best_to, cfg_dict)
 
     def run_sweep(self):
+        if self.mode == "split":
+            self._run_sweep_split()
+            return
         rows = []
+        occ_targets = []
         value = 0.0
         step = max(self.min_step, 1e-9)
         best_metric = -float("inf")
@@ -306,17 +452,17 @@ class ThresholdOptimizer:
         iteration = 0
         while value <= self.max_threshold + 1e-9:
             iter_start = time.time()
-            log_base = self.work_dir / f"sweep_run_{self.run_counter}"
+            log_base = self.pickle_root / f"sweep_run_{self.run_counter}"
             self.run_counter += 1
             for param in self.params:
                 param.setter(self.state, value)
             metric = self.evaluate(log_base=log_base)
             if baseline_metric is None:
                 baseline_metric = metric
-            occ = self.collect_occupancy(log_base)
             row = {"threshold": value, "metric": metric}
-            row.update(occ)
+            row.update(self._threshold_config_row())
             rows.append(row)
+            occ_targets.append((row, log_base.parent / log_base.name))
             if metric > best_metric:
                 best_metric = metric
                 best_state = copy.deepcopy(self.state)
@@ -344,6 +490,97 @@ class ThresholdOptimizer:
                 break
             value += step
         if rows and self.csv_output is not None:
+            for row, log_base in occ_targets:
+                try:
+                    row.update(self.collect_occupancy(log_base))
+                except FileNotFoundError:
+                    if self.verbose:
+                        print(f"[opt] warning: occupancy logs missing for {log_base}")
+            self.csv_output.parent.mkdir(parents=True, exist_ok=True)
+            with self.csv_output.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+        self.best_metric = best_metric if best_metric != -float("inf") else None
+        self.best_state = best_state
+        if self.apply_best_to is not None and best_state is not None:
+            cfg_dict = build_thresholds_dict(best_state)
+            writer = ConfigWriter(self.apply_best_to)
+            writer.write_to(self.apply_best_to, cfg_dict)
+
+    def _run_sweep_split(self):
+        param_lookup = {param.name: param for param in self.params}
+        if "global_x" not in param_lookup or "global_h" not in param_lookup:
+            raise RuntimeError("Split mode sweep requires global_x and global_h parameters")
+        x_param = param_lookup["global_x"]
+        h_param = param_lookup["global_h"]
+
+        rows = []
+        occ_targets = []
+        step = max(self.min_step, 1e-9)
+        best_metric = -float("inf")
+        best_state = None
+        baseline_metric: Optional[float] = None
+        start_time = time.time()
+
+        h_value = 0.0
+        stop_all = False
+        while h_value <= self.max_threshold + 1e-9 and not stop_all:
+            h_param.setter(self.state, h_value)
+            x_value = 0.0
+            while x_value <= self.max_threshold + 1e-9:
+                iter_start = time.time()
+                x_param.setter(self.state, x_value)
+                log_base = self.pickle_root / f"sweep_run_{self.run_counter}"
+                self.run_counter += 1
+                metric = self.evaluate(log_base=log_base)
+                if baseline_metric is None:
+                    baseline_metric = metric
+                row = {"threshold": x_value, "metric": metric}
+                row.update(self._threshold_config_row())
+                rows.append(row)
+                occ_targets.append((row, log_base.parent / log_base.name))
+                if metric > best_metric:
+                    best_metric = metric
+                    best_state = copy.deepcopy(self.state)
+                if self.verbose:
+                    elapsed = time.time() - iter_start
+                    print(
+                        f"[opt] sweep x={x_value:.4f}, h={h_value:.4f} -> metric {metric:.4f} "
+                        f"(step took {elapsed:.1f}s)"
+                    )
+                stop_inner = False
+                if metric < self.min_metric:
+                    stop_inner = True
+                    stop_all = True
+                if (
+                    not stop_inner
+                    and baseline_metric is not None
+                    and self.min_metric_drop is not None
+                ):
+                    drop_limit = baseline_metric * (1.0 - self.min_metric_drop)
+                    if metric < drop_limit:
+                        if self.verbose:
+                            total_elapsed = time.time() - start_time
+                            print(
+                                f"[opt] stopping x sweep at x={x_value:.4f}, h={h_value:.4f} "
+                                f"after drop {baseline_metric - metric:.4f} (elapsed {total_elapsed/60:.1f} min)"
+                            )
+                        stop_inner = True
+                if stop_inner:
+                    break
+                x_value += step
+            if stop_all:
+                break
+            h_value += step
+
+        if rows and self.csv_output is not None:
+            for row, log_base in occ_targets:
+                try:
+                    row.update(self.collect_occupancy(log_base))
+                except FileNotFoundError:
+                    if self.verbose:
+                        print(f"[opt] warning: occupancy logs missing for {log_base}")
             self.csv_output.parent.mkdir(parents=True, exist_ok=True)
             with self.csv_output.open("w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=rows[0].keys())
