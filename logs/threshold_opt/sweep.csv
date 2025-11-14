@@ -1,4 +1,4 @@
 threshold,threshold_global,threshold_x,threshold_h,encoder_tra_0_x,encoder_tra_0_h,encoder_tra_1_x,encoder_tra_1_h,encoder_tra_2_x,encoder_tra_2_h,decoder_tra_0_x,decoder_tra_0_h,decoder_tra_1_x,decoder_tra_1_h,decoder_tra_2_x,decoder_tra_2_h,dpgrnn1_intra_rnn1_x,dpgrnn1_intra_rnn1_h,dpgrnn1_intra_rnn2_x,dpgrnn1_intra_rnn2_h,dpgrnn1_inter_rnn1_x,dpgrnn1_inter_rnn1_h,dpgrnn1_inter_rnn2_x,dpgrnn1_inter_rnn2_h,dpgrnn2_intra_rnn1_x,dpgrnn2_intra_rnn1_h,dpgrnn2_intra_rnn2_x,dpgrnn2_intra_rnn2_h,dpgrnn2_inter_rnn1_x,dpgrnn2_inter_rnn1_h,dpgrnn2_inter_rnn2_x,dpgrnn2_inter_rnn2_h,metric,occ_x,occ_y,occ_tot
-0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5246,0.9954997324587046,0.8715239170770618,0.9335118247678832
-0.01,0.01,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5121,0.9955380986236488,0.9069101147950335,0.9512241067093412
-0.02,0.02,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5011,0.9950959432812455,0.9081672461330372,0.9516315947071414
+0.0,,0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5246,0.9954997324587046,0.8715239170770618,0.9335118247678832
+0.1,,0.1,0.0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5159,0.9955560895371537,0.8707468613442464,0.9331514754407
+0.0,,0.0,0.1,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.4525,0.9960509480375351,0.9246705928764651,0.9603607704570001

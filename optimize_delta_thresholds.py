@@ -186,6 +186,7 @@ class ThresholdOptimizer:
         min_metric_drop: Optional[float] = None,
         occupancy_threshold: float = 1e-3,
         csv_output: Optional[Path] = None,
+        max_initial_failures: int = 0,
     ):
         self.infer_writer = ConfigWriter(infer_config)
         self.work_dir = work_dir
@@ -223,6 +224,7 @@ class ThresholdOptimizer:
         self.best_metric: Optional[float] = None
         self.best_state: Optional[dict] = None
         self.run_counter = 0
+        self.max_initial_failures = max_initial_failures
 
     def evaluate(self, log_base: Optional[Path] = None) -> float:
         sig = state_signature(self.state)
@@ -572,9 +574,17 @@ class ThresholdOptimizer:
 
         h_value = 0.0
         stop_all = False
+        initial_failures = 0
         while h_value <= self.max_threshold + 1e-9 and not stop_all:
             h_param.setter(self.state, h_value)
             x_value = 0.0
+            first_iteration = True
+            drop_violation = False
+            if self.verbose and self.max_initial_failures > 0:
+                print(
+                    f"[opt] split sweep status before h={h_value:.4f}: "
+                    f"consecutive drop-limit failures={initial_failures}/{self.max_initial_failures}"
+                )
             while x_value <= self.max_threshold + 1e-9:
                 iter_start = time.time()
                 x_param.setter(self.state, x_value)
@@ -607,7 +617,17 @@ class ThresholdOptimizer:
                 ):
                     drop_limit = baseline_metric * (1.0 - self.min_metric_drop)
                     if metric < drop_limit:
-                        if self.verbose:
+                        if first_iteration:
+                            drop_violation = True
+                            initial_failures += 1
+                            if self.verbose:
+                                print(
+                                    f"[opt] split sweep drop-limit violation at h={h_value:.4f}; "
+                                    f"consecutive failures={initial_failures}"
+                                )
+                            if self.max_initial_failures > 0 and initial_failures >= self.max_initial_failures:
+                                stop_all = True
+                        elif self.verbose:
                             total_elapsed = time.time() - start_time
                             print(
                                 f"[opt] stopping x sweep at x={x_value:.4f}, h={h_value:.4f} "
@@ -616,10 +636,13 @@ class ThresholdOptimizer:
                         stop_inner = True
                 if stop_inner:
                     break
+                first_iteration = False
                 x_value += step
             if stop_all:
                 break
             h_value += step
+            if not drop_violation:
+                initial_failures = 0
 
         self._write_csv(rows, occ_targets)
         self.best_metric = best_metric if best_metric != -float("inf") else None
@@ -742,6 +765,8 @@ def main():
     parser.add_argument("--max-metric-drop", type=float, default=None, help="Relative drop (e.g. 0.15 for 15%) allowed vs baseline")
     parser.add_argument("--csv-output", default="logs/threshold_opt/sweep_results.csv", help="CSV file for sweep summaries")
     parser.add_argument("--occupancy-threshold", type=float, default=1e-3, help="Delta used for occupancy computation")
+    parser.add_argument("--max-initial-failures", type=int, default=0,
+                        help="Stop split sweep when consecutive h values immediately violate min-metric")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -761,6 +786,7 @@ def main():
         min_metric_drop=args.max_metric_drop,
         occupancy_threshold=args.occupancy_threshold,
         csv_output=Path(args.csv_output).resolve() if args.csv_output else None,
+        max_initial_failures=args.max_initial_failures,
     )
     optimizer.run()
     best = optimizer.best_metric if optimizer.best_metric is not None else float("nan")
