@@ -131,7 +131,22 @@ def _aggregate_step_stats(sequences: Iterable[np.ndarray], threshold: float) -> 
     }
 
 
-def compute_occupancy(log_file, threshold, component=None):
+def _aggregate_mean_occupancy(sequences: Iterable[np.ndarray], threshold: float) -> dict:
+    occupancy_total = 0.0
+    occupancy_count = 0
+
+    for seq in sequences:
+        if seq.shape[0] < 2:
+            continue
+        diffs = seq[1:] - seq[:-1]
+        occupancy_total += float(np.mean(np.abs(diffs) > threshold))
+        occupancy_count += 1
+
+    mean_occupancy = occupancy_total / occupancy_count if occupancy_count else 0.0
+    return {"mean_occupancy": mean_occupancy, "samples": occupancy_count}
+
+
+def compute_occupancy(log_file, threshold, component=None, *, full_stats: bool = True):
     data = _load_component_arrays(log_file)
 
     if component is not None:
@@ -147,8 +162,10 @@ def compute_occupancy(log_file, threshold, component=None):
             for seq in _iter_sequences(arrays):
                 yield np.asarray(seq)
 
-    stats = _aggregate_step_stats(_sequence_iter(), threshold)
-    return stats
+    sequence_iter = _sequence_iter()
+    if full_stats:
+        return _aggregate_step_stats(sequence_iter, threshold)
+    return _aggregate_mean_occupancy(sequence_iter, threshold)
 
 
 def _plot_trend(x, y, ylabel, title, path, y_std=None):

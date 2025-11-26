@@ -11,6 +11,7 @@ from typing import Optional, Callable, Any
 from einops import rearrange
 
 from .spectral_preprocess import SpectralPreprocessor
+from .deltagru import DeltaGRU as DeltaSkipGRU
 
 
 def _default_gru_factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
@@ -783,12 +784,19 @@ class GTCRN(nn.Module):
         log_gru_inputs=False,
         log_file=None,
         use_delta_gru: bool = False,
+        delta_gru_impl: str = "standard",
         delta_gru_threshold_x: Optional[float] = None,
         delta_gru_threshold_h: Optional[float] = None,
         delta_gru_thresholds: Optional[Mapping[str, Any]] = None,
     ):
         super().__init__()
-        self._use_delta_gru = use_delta_gru
+        # Backward compatibility: use_delta_gru=True implies delta_noskip unless overridden
+        if delta_gru_impl not in ("standard", "delta_noskip", "delta_skip"):
+            raise ValueError("delta_gru_impl must be one of: standard, delta_noskip, delta_skip")
+        if use_delta_gru and delta_gru_impl == "standard":
+            delta_gru_impl = "delta_noskip"
+        self._use_delta_gru = delta_gru_impl != "standard"
+        self._delta_gru_impl = delta_gru_impl
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
@@ -802,7 +810,7 @@ class GTCRN(nn.Module):
         self.erb = ERB(erb_low, erb_high, nfft=self.n_fft)
         self.sfe = SFE(3, 1)
 
-        gru_factory = self._build_gru_factory(use_delta_gru)
+        gru_factory = self._build_gru_factory(self._delta_gru_impl)
 
         base_thresh_x = delta_gru_threshold_x
         base_thresh_h = delta_gru_threshold_h
@@ -953,22 +961,34 @@ class GTCRN(nn.Module):
         return new_state
 
     @staticmethod
-    def _build_gru_factory(use_delta_gru: bool) -> Callable[..., nn.Module]:
-        if not use_delta_gru:
+    def _build_gru_factory(impl: str) -> Callable[..., nn.Module]:
+        if impl == "standard":
             return _default_gru_factory
-
-        def factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
-            threshold_x = kwargs.pop("threshold_x", None)
-            threshold_h = kwargs.pop("threshold_h", None)
-            return DeltaGRU(
-                input_size=input_size,
-                hidden_size=hidden_size,
-                threshold_x=threshold_x,
-                threshold_h=threshold_h,
-                **kwargs,
-            )
-
-        return factory
+        if impl == "delta_noskip":
+            def factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
+                threshold_x = kwargs.pop("threshold_x", None)
+                threshold_h = kwargs.pop("threshold_h", None)
+                return DeltaGRU(
+                    input_size=input_size,
+                    hidden_size=hidden_size,
+                    threshold_x=threshold_x,
+                    threshold_h=threshold_h,
+                    **kwargs,
+                )
+            return factory
+        if impl == "delta_skip":
+            def factory(input_size: int, hidden_size: int, **kwargs) -> nn.Module:
+                threshold_x = kwargs.pop("threshold_x", None)
+                threshold_h = kwargs.pop("threshold_h", None)
+                return DeltaSkipGRU(
+                    input_size=input_size,
+                    hidden_size=hidden_size,
+                    threshold_x=threshold_x,
+                    threshold_h=threshold_h,
+                    **kwargs,
+                )
+            return factory
+        raise ValueError(f"Unsupported GRU implementation '{impl}'")
 
     @classmethod
     def _compute_erb_subbands(cls, n_fft):

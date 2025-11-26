@@ -19,6 +19,7 @@ from delta_threshold_layout import (
     RUN_CSV_NAME,
     RUN_DIR_PREFIX,
     RUN_LOG_BASENAME,
+    parse_run_index,
     per_component_columns,
 )
 
@@ -71,7 +72,6 @@ class ConfigWriter:
     def render(self, thresholds: dict, log_file: Optional[Path] = None) -> str:
         data = copy.deepcopy(self.base_data)
         target = data[self.section_key]
-        target["use_delta_gru"] = True
         target["delta_gru_threshold_x"] = thresholds["delta_gru_threshold_x"]
         target["delta_gru_threshold_h"] = thresholds["delta_gru_threshold_h"]
         target["delta_gru_thresholds"] = thresholds["delta_gru_thresholds"]
@@ -117,6 +117,38 @@ def build_thresholds_dict(state: dict) -> dict:
     }
 
 
+def _set_group_threshold(state: dict, group: str, axis: str, value: Optional[float]):
+    if axis not in ("x", "h"):
+        raise ValueError(f"Unsupported axis '{axis}' (expected 'x' or 'h')")
+    if group == "encoder":
+        for block in state["encoder_tra_blocks"]:
+            block[axis] = value
+        return
+    if group == "decoder":
+        for block in state["decoder_tra_blocks"]:
+            block[axis] = value
+        return
+    if group in ("dpgrnn1", "dpgrnn2"):
+        for name in ("intra_rnn1", "intra_rnn2", "inter_rnn1", "inter_rnn2"):
+            state[group][name][axis] = value
+        return
+    raise ValueError(f"Unsupported group '{group}' for threshold assignment")
+
+
+def _get_group_threshold(state: dict, group: str, axis: str) -> Optional[float]:
+    if axis not in ("x", "h"):
+        raise ValueError(f"Unsupported axis '{axis}' (expected 'x' or 'h')")
+    if group == "encoder":
+        return state["encoder_tra_blocks"][0][axis]
+    if group == "decoder":
+        return state["decoder_tra_blocks"][0][axis]
+    if group == "dpgrnn1":
+        return state["dpgrnn1"]["intra_rnn1"][axis]
+    if group == "dpgrnn2":
+        return state["dpgrnn2"]["intra_rnn1"][axis]
+    raise ValueError(f"Unsupported group '{group}' for threshold retrieval")
+
+
 def make_parameters(mode: str, initial: float) -> List[ThresholdParam]:
     params: List[ThresholdParam] = []
     if mode == "global":
@@ -157,7 +189,19 @@ def make_parameters(mode: str, initial: float) -> List[ThresholdParam]:
                     setter=lambda s, v, block=block, comp=comp: s[block][comp].__setitem__("h", v),
                 ))
     else:
-        raise ValueError(f"Unsupported mode {mode}")
+        if mode != "l1":
+            raise ValueError(f"Unsupported mode {mode}")
+        for group in ("encoder", "dpgrnn1", "dpgrnn2", "decoder"):
+            params.append(ThresholdParam(
+                f"{group}_x",
+                getter=lambda s, group=group: _get_group_threshold(s, group, "x"),
+                setter=lambda s, v, group=group: _set_group_threshold(s, group, "x", v),
+            ))
+            params.append(ThresholdParam(
+                f"{group}_h",
+                getter=lambda s, group=group: _get_group_threshold(s, group, "h"),
+                setter=lambda s, v, group=group: _set_group_threshold(s, group, "h", v),
+            ))
     return params
 
 
@@ -192,14 +236,14 @@ class ThresholdOptimizer:
         min_metric_drop: Optional[float] = None,
         csv_output: Optional[Path] = None,
         max_initial_failures: int = 0,
+        resume_split: bool = False,
+        near_baseline_x: float = 0.0,
+        near_baseline_h: float = 0.0,
     ):
         self.infer_writer = ConfigWriter(infer_config)
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.pickle_root = self.work_dir / "pkls"
-        if self.pickle_root.exists():
-            shutil.rmtree(self.pickle_root)
-        self.pickle_root.mkdir(parents=True, exist_ok=True)
         self.max_threshold = max_threshold
         self.decay_factor = decay_factor
         self.min_step = min_step
@@ -219,8 +263,25 @@ class ThresholdOptimizer:
         self.cache: Dict[Tuple, float] = {}
         self.best_metric: Optional[float] = None
         self.best_state: Optional[dict] = None
-        self.run_counter = 0
         self.max_initial_failures = max_initial_failures
+        self.resume_split = resume_split
+        self.resume_info: Optional[dict] = None
+        self.near_baseline_x = near_baseline_x
+        self.near_baseline_h = near_baseline_h
+
+        if self.resume_split:
+            self.pickle_root.mkdir(parents=True, exist_ok=True)
+        else:
+            if self.pickle_root.exists():
+                shutil.rmtree(self.pickle_root)
+            self.pickle_root.mkdir(parents=True, exist_ok=True)
+        self.run_counter = 0
+        if self.resume_split:
+            self.resume_info = self._load_split_resume_info()
+            baseline_state = self.resume_info["baseline_state"]
+            self.state["global_x"] = baseline_state["global_x"]
+            self.state["global_h"] = baseline_state["global_h"]
+            self.run_counter = self.resume_info["next_run_index"]
 
     def evaluate(self, log_base: Optional[Path] = None) -> float:
         sig = state_signature(self.state)
@@ -322,7 +383,7 @@ class ThresholdOptimizer:
             row["global_x"] = self.state["global_x"]
             row["global_h"] = self.state["global_h"]
             return row
-        if self.mode != "per_gru":
+        if self.mode not in ("per_gru", "l1"):
             return row
         self._fill_block_thresholds(row, "encoder_tra_blocks", "enctra")
         self._fill_block_thresholds(row, "decoder_tra_blocks", "dectra")
@@ -358,6 +419,66 @@ class ThresholdOptimizer:
             else:
                 row[f"{base}_x"] = values.get("x")
                 row[f"{base}_h"] = values.get("h")
+
+    def _read_threshold_row(self, csv_path: Path) -> Dict[str, str]:
+        if not csv_path.is_file():
+            raise FileNotFoundError(f"Missing thresholds CSV at {csv_path}")
+        with csv_path.open() as f:
+            reader = csv.DictReader(f)
+            row = next(reader, None)
+        if row is None:
+            raise RuntimeError(f"No rows found in {csv_path}")
+        return row
+
+    def _load_split_resume_info(self) -> dict:
+        run_dirs = [p for p in self.pickle_root.glob(f"{RUN_DIR_PREFIX}*") if p.is_dir()]
+        run_dirs = sorted(run_dirs, key=lambda p: parse_run_index(p)[0])
+        run_dirs = [p for p in run_dirs if parse_run_index(p)[0] >= 0]
+        if len(run_dirs) < 2:
+            raise RuntimeError(
+                "Resume requested but fewer than two run folders exist under "
+                f"{self.pickle_root}"
+            )
+        prev_dir = run_dirs[-2]
+        last_dir = run_dirs[-1]
+        baseline_row = self._read_threshold_row(prev_dir / RUN_CSV_NAME)
+
+        def _get_float(key: str) -> Optional[float]:
+            raw = baseline_row.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        baseline_x = _get_float("global_x") or _get_float("global")
+        baseline_h = _get_float("global_h") or _get_float("global")
+        if baseline_x is None or baseline_h is None:
+            raise RuntimeError(
+                f"Could not parse baseline x/h thresholds from {prev_dir / RUN_CSV_NAME}"
+            )
+
+        step = max(self.min_step, 1e-9)
+        start_x = baseline_x + step
+        if start_x > self.max_threshold + 1e-9:
+            start_x = self.max_threshold
+        last_index, _ = parse_run_index(last_dir)
+        if last_index < 0:
+            raise RuntimeError(f"Invalid run directory name: {last_dir.name}")
+        if last_dir.exists():
+            shutil.rmtree(last_dir)
+        print(
+            f"[opt] resuming split sweep from {prev_dir.name}: "
+            f"h={baseline_h:.4f}, next x={start_x:.4f} (step {step:.4g}), "
+            f"reusing index {last_index}"
+        )
+        return {
+            "start_h": baseline_h,
+            "start_x": start_x,
+            "next_run_index": last_index,
+            "baseline_state": {"global_x": baseline_x, "global_h": baseline_h},
+        }
 
     def _prepare_run_workspace(self) -> Tuple[Path, Path]:
         run_name = f"{RUN_DIR_PREFIX}{self.run_counter}"
@@ -426,6 +547,20 @@ class ThresholdOptimizer:
             writer = csv.DictWriter(f, fieldnames=self.csv_fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+
+    def _apply_baseline_thresholds(self, x_value: float, h_value: float):
+        self.state["global_x"] = x_value
+        self.state["global_h"] = h_value
+        for group in ("encoder", "dpgrnn1", "dpgrnn2", "decoder"):
+            _set_group_threshold(self.state, group, "x", x_value)
+            _set_group_threshold(self.state, group, "h", h_value)
+
+    def _metric_below_limit(self, metric: float, baseline_metric: Optional[float]) -> bool:
+        if metric < self.min_metric:
+            return True
+        if baseline_metric is not None and self.min_metric_drop is not None:
+            return metric < baseline_metric * (1.0 - self.min_metric_drop)
+        return False
 
     def run_coordinate(self):
         current = self.evaluate()
@@ -498,6 +633,62 @@ class ThresholdOptimizer:
             writer = ConfigWriter(self.apply_best_to)
             writer.write_to(self.apply_best_to, cfg_dict)
 
+    def run_near_search(self):
+        if self.mode != "l1":
+            raise RuntimeError("near-search strategy is only supported for mode 'l1'")
+        step = max(self.min_step, 1e-9)
+        rows: List[dict] = []
+
+        # Start from the user-provided baseline applied to all groups
+        self._apply_baseline_thresholds(self.near_baseline_x, self.near_baseline_h)
+        run_dir, log_base = self._prepare_run_workspace()
+        baseline_metric = self.evaluate(log_base=log_base)
+        baseline_row = {"threshold": 0.0, "metric": baseline_metric}
+        baseline_row.update(self._threshold_config_row())
+        rows.append(baseline_row)
+        self._finalize_run_outputs(run_dir, log_base, baseline_row)
+        self.best_metric = baseline_metric
+        self.best_state = copy.deepcopy(self.state)
+
+        def _update_best(metric: float):
+            if self.best_metric is None or metric > self.best_metric:
+                self.best_metric = metric
+                self.best_state = copy.deepcopy(self.state)
+
+        groups = ("encoder", "dpgrnn1", "dpgrnn2", "decoder")
+        for group in groups:
+            # Reset everything to the baseline before exploring this group
+            self._apply_baseline_thresholds(self.near_baseline_x, self.near_baseline_h)
+
+            for axis, base_value in (("x", self.near_baseline_x), ("h", self.near_baseline_h)):
+                current_value = base_value
+                while True:
+                    candidate = current_value + step
+                    if candidate > self.max_threshold + 1e-9:
+                        break
+                    _set_group_threshold(self.state, group, axis, candidate)
+                    iter_run_dir, iter_log_base = self._prepare_run_workspace()
+                    metric = self.evaluate(log_base=iter_log_base)
+                    row = {"threshold": candidate, "metric": metric}
+                    row.update(self._threshold_config_row())
+                    rows.append(row)
+                    self._finalize_run_outputs(iter_run_dir, iter_log_base, row)
+                    _update_best(metric)
+                    if self._metric_below_limit(metric, baseline_metric):
+                        # Revert to the last safe value before moving on
+                        _set_group_threshold(self.state, group, axis, current_value)
+                        break
+                    current_value = candidate
+            # Ensure we leave the group at baseline before the next group
+            _set_group_threshold(self.state, group, "x", self.near_baseline_x)
+            _set_group_threshold(self.state, group, "h", self.near_baseline_h)
+
+        self._write_summary_csv(rows)
+        if self.apply_best_to is not None and self.best_state is not None:
+            cfg_dict = build_thresholds_dict(self.best_state)
+            writer = ConfigWriter(self.apply_best_to)
+            writer.write_to(self.apply_best_to, cfg_dict)
+
     def _run_sweep_split(self):
         param_lookup = {param.name: param for param in self.params}
         if "global_x" not in param_lookup or "global_h" not in param_lookup:
@@ -512,12 +703,14 @@ class ThresholdOptimizer:
         baseline_metric: Optional[float] = None
         start_time = time.time()
 
-        h_value = 0.0
+        h_value = self.resume_info["start_h"] if self.resume_info else 0.0
         stop_all = False
         initial_failures = 0
+        resume_active = self.resume_info is not None
+        first_h_iteration = True
         while h_value <= self.max_threshold + 1e-9 and not stop_all:
             h_param.setter(self.state, h_value)
-            x_value = 0.0
+            x_value = self.resume_info["start_x"] if (resume_active and first_h_iteration) else 0.0
             first_iteration = True
             drop_violation = False
             if self.verbose and self.max_initial_failures > 0:
@@ -546,9 +739,14 @@ class ThresholdOptimizer:
                         f"(step took {elapsed:.1f}s)"
                     )
                 stop_inner = False
-                if metric < self.min_metric:
+                min_floor_violation = metric < self.min_metric
+                if min_floor_violation:
                     stop_inner = True
-                    stop_all = True
+                    if self.verbose:
+                        print(
+                            f"[opt] metric {metric:.4f} fell below min-metric {self.min_metric:.4f} "
+                            f"at x={x_value:.4f}, h={h_value:.4f}; advancing h and resetting x"
+                        )
                 if (
                     not stop_inner
                     and baseline_metric is not None
@@ -582,6 +780,8 @@ class ThresholdOptimizer:
             h_value += step
             if not drop_violation:
                 initial_failures = 0
+            resume_active = False
+            first_h_iteration = False
 
         self._write_summary_csv(rows)
         self.best_metric = best_metric if best_metric != -float("inf") else None
@@ -659,10 +859,14 @@ class ThresholdOptimizer:
             writer.write_to(self.apply_best_to, cfg_dict)
 
     def run(self):
+        if self.mode == "l1" and self.strategy != "near-search":
+            raise RuntimeError("Mode 'l1' requires strategy 'near-search'")
         if self.strategy == "coordinate":
             self.run_coordinate()
         elif self.strategy == "sweep":
             self.run_sweep()
+        elif self.strategy == "near-search":
+            self.run_near_search()
         else:
             raise ValueError(f"Unknown strategy {self.strategy}")
 
@@ -671,21 +875,47 @@ def main():
     parser = argparse.ArgumentParser(description="Optimize DeltaGRU thresholds via divide-and-conquer or sweep search")
     parser.add_argument("--infer-config", default="configs/cfg_infer.yaml", help="Inference config path")
     parser.add_argument("--train-config", default=None, help="Optional cfg_train.yaml to update with best thresholds")
-    parser.add_argument("--mode", choices=["global", "split", "per_gru"], default="global")
-    parser.add_argument("--strategy", choices=["coordinate", "sweep"], default="coordinate")
+    parser.add_argument("--mode", choices=["global", "split", "per_gru", "l1"], default="global")
+    parser.add_argument("--strategy", choices=["coordinate", "sweep", "near-search"], default="coordinate")
     parser.add_argument("--metric", choices=list(RESULT_METRICS), default="PESQ")
     parser.add_argument("--max-threshold", type=float, default=1.0, help="Upper bound for thresholds")
     parser.add_argument("--decay", type=float, default=0.5, help="Step decay factor (e.g. 0.5 for halving)")
-    parser.add_argument("--min-step", type=float, default=0.05, help="Smallest step size before stopping")
+    parser.add_argument(
+        "--min-step",
+        type=float,
+        default=0.05,
+        help="Smallest step size before stopping; also used as the increment for near-search",
+    )
     parser.add_argument("--work-dir", default="logs/threshold_opt", help="Working directory for temp configs")
     parser.add_argument("--device", default="0", help="GPU device id for infer.py")
-    parser.add_argument("--min-metric", type=float, default=0.0, help="Stop sweep when metric falls below this value")
+    parser.add_argument(
+        "--min-metric",
+        type=float,
+        default=0.0,
+        help=(
+            "Absolute metric floor. In split sweeps, falling below this value skips to the next h "
+            "(resetting x); in other sweeps it stops the search."
+        ),
+    )
     parser.add_argument("--max-metric-drop", type=float, default=None, help="Relative drop (e.g. 0.15 for 15%) allowed vs baseline")
     parser.add_argument("--csv-output", default="logs/threshold_opt/sweep_results.csv", help="CSV file for sweep summaries")
     parser.add_argument("--max-initial-failures", type=int, default=0,
                         help="Stop split sweep when consecutive h values immediately violate min-metric")
+    parser.add_argument("--resume-split", action="store_true",
+                        help="Resume split sweep: restart from the last completed (run_*) thresholds and continue with x+=step")
+    parser.add_argument("--near-baseline-x", type=float, default=0.0,
+                        help="Baseline x threshold used to seed near-search (applied to all groups)")
+    parser.add_argument("--near-baseline-h", type=float, default=0.0,
+                        help="Baseline h threshold used to seed near-search (applied to all groups)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    if args.resume_split and (args.strategy != "sweep" or args.mode != "split"):
+        parser.error("--resume-split is only supported for split sweeps (strategy=sweep, mode=split)")
+    if args.strategy == "near-search" and args.mode != "l1":
+        parser.error("near-search strategy is only supported with --mode l1")
+    if args.mode == "l1" and args.strategy != "near-search":
+        parser.error("mode l1 requires --strategy near-search")
 
     optimizer = ThresholdOptimizer(
         infer_config=Path(args.infer_config),
@@ -703,6 +933,9 @@ def main():
         min_metric_drop=args.max_metric_drop,
         csv_output=Path(args.csv_output).resolve() if args.csv_output else None,
         max_initial_failures=args.max_initial_failures,
+        resume_split=args.resume_split,
+        near_baseline_x=args.near_baseline_x,
+        near_baseline_h=args.near_baseline_h,
     )
     optimizer.run()
     best = optimizer.best_metric if optimizer.best_metric is not None else float("nan")

@@ -124,7 +124,12 @@ def _process_run(
                         print(f"[agg] {run_dir.name}/{base}_{component}: no threshold -> skipped")
                     continue
             try:
-                stats = compute_occupancy(str(run_dir / base), threshold, component=component)
+                stats = compute_occupancy(
+                    str(run_dir / base),
+                    threshold,
+                    component=component,
+                    full_stats=False,
+                )
             except FileNotFoundError:
                 if verbose:
                     print(f"[agg] missing logs for {base} component {component} in {run_dir.name}")
@@ -199,16 +204,16 @@ def main():
             continue
         if args.verbose:
             print(f"[agg] processing {run_dir.name}")
-            rows.append(
-                _process_run(
-                    run_dir,
-                    row,
-                    args.mode,
-                    args.occupancy_threshold,
-                    weights,
-                    verbose=args.verbose,
-                )
+        rows.append(
+            _process_run(
+                run_dir,
+                row,
+                args.mode,
+                args.occupancy_threshold,
+                weights,
+                verbose=args.verbose,
             )
+        )
         processed += 1
 
     output_path = Path(args.output).resolve()

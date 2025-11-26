@@ -1,4 +1,0 @@
-threshold,global,global_x,global_h,enctra0_x,enctra0_h,enctra1_x,enctra1_h,enctra2_x,enctra2_h,dectra0_x,dectra0_h,dectra1_x,dectra1_h,dectra2_x,dectra2_h,dp1intra1_x,dp1intra1_h,dp1intra2_x,dp1intra2_h,dp1inter1_x,dp1inter1_h,dp1inter2_x,dp1inter2_h,dp2intra1_x,dp2intra1_h,dp2intra2_x,dp2intra2_h,dp2inter1_x,dp2inter1_h,dp2inter2_x,dp2inter2_h,metric,x_avg,h_avg,global_avg
-0.0,0.0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5246,1.0,0.9885817307692311,0.9942908653846155
-0.01,0.01,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5121,0.955008472141024,0.6715411926891863,0.8132748324151051
-0.02,0.02,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,2.5011,0.9124168578265738,0.5709222402372199,0.7416695490318969
