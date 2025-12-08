@@ -88,6 +88,8 @@ def _build_threshold_lookup(row: dict, mode: str):
             return threshold_x if component == "x" else threshold_h
 
         return lookup
+    if mode not in ("per_gru", "l1"):
+        raise ValueError(f"Unsupported mode '{mode}' for threshold lookup")
     per_component: Dict[Tuple[str, str], Optional[float]] = {}
     for base in COMPONENT_BASES:
         for comp in ("x", "h"):
@@ -179,7 +181,12 @@ def _iter_run_dirs(pkls_dir: Path) -> Iterable[Path]:
 def main():
     parser = argparse.ArgumentParser(description="Aggregate per-run GRU logs into a sweep CSV with occupancy stats")
     parser.add_argument("--pkls-dir", default="logs/threshold_opt/pkls", help="Directory containing run_* folders")
-    parser.add_argument("--mode", choices=["global", "split", "per_gru"], required=True, help="Threshold layout to apply")
+    parser.add_argument(
+        "--mode",
+        choices=["global", "split", "per_gru", "l1"],
+        required=True,
+        help="Threshold layout to apply (l1 uses per-GRU thresholds grouped by block type)",
+    )
     parser.add_argument("--output", default="logs/threshold_opt/sweep.csv", help="Destination CSV for the sweep summary")
     parser.add_argument("--occupancy-threshold", type=float, default=1e-3,
                         help="Fallback delta for occupancy computation when a threshold is missing")

@@ -20,7 +20,7 @@ network:
   config: ${network.exp_path}/config.yaml
   ckpt_name: best_model_111
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced
+  enh_folder: /home/terzano/Desktop/NNs/SEtrain/logs/near-search-2/enhanced
   # Optional overrides for DeltaGRU inference; leave as null to use the experiment defaults.
   use_delta_gru: true
 

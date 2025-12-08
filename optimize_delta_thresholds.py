@@ -237,8 +237,15 @@ class ThresholdOptimizer:
         csv_output: Optional[Path] = None,
         max_initial_failures: int = 0,
         resume_split: bool = False,
+        resume_l1: bool = False,
+        split_start_x: Optional[float] = None,
+        split_start_h: Optional[float] = None,
         near_baseline_x: float = 0.0,
         near_baseline_h: float = 0.0,
+        infer_max_files: Optional[int] = None,
+        infer_no_copy: bool = False,
+        infer_amp: bool = False,
+        infer_workers: int = 1,
     ):
         self.infer_writer = ConfigWriter(infer_config)
         self.work_dir = work_dir
@@ -265,11 +272,26 @@ class ThresholdOptimizer:
         self.best_state: Optional[dict] = None
         self.max_initial_failures = max_initial_failures
         self.resume_split = resume_split
+        self.resume_l1 = resume_l1
         self.resume_info: Optional[dict] = None
+        self.l1_resume_info: Optional[dict] = None
+        self.split_start_x = split_start_x
+        self.split_start_h = split_start_h
         self.near_baseline_x = near_baseline_x
         self.near_baseline_h = near_baseline_h
+        self.infer_max_files = infer_max_files
+        self.infer_no_copy = infer_no_copy
+        self.infer_amp = infer_amp
+        self.infer_workers = infer_workers
 
-        if self.resume_split:
+        if (self.split_start_x is None) != (self.split_start_h is None):
+            raise ValueError("split_start_x and split_start_h must both be provided")
+        if self.mode != "split" and (self.split_start_x is not None or self.split_start_h is not None):
+            raise ValueError("split start thresholds are only supported for mode 'split'")
+        if self.resume_split and (self.split_start_x is not None or self.split_start_h is not None):
+            raise ValueError("Cannot combine resume_split with explicit split start thresholds")
+
+        if self.resume_split or self.resume_l1:
             self.pickle_root.mkdir(parents=True, exist_ok=True)
         else:
             if self.pickle_root.exists():
@@ -282,6 +304,13 @@ class ThresholdOptimizer:
             self.state["global_x"] = baseline_state["global_x"]
             self.state["global_h"] = baseline_state["global_h"]
             self.run_counter = self.resume_info["next_run_index"]
+        elif self.resume_l1:
+            self.l1_resume_info = self._load_l1_resume_info()
+            self.cache.update(self.l1_resume_info["cache"])
+            self.best_metric = self.l1_resume_info["best_metric"]
+            self.best_state = copy.deepcopy(self.l1_resume_info["best_state"]) if self.l1_resume_info["best_state"] is not None else None
+            self.run_counter = self.l1_resume_info["next_run_index"]
+            self.state = copy.deepcopy(self.l1_resume_info["resume_state"])
 
     def evaluate(self, log_base: Optional[Path] = None) -> float:
         sig = state_signature(self.state)
@@ -292,9 +321,18 @@ class ThresholdOptimizer:
             temp_path = Path(tmp.name)
             tmp.write(self.infer_writer.render(cfg_dict, log_file=log_base))
         try:
+            infer_cmd = ["python", "infer.py", "-C", str(temp_path), "-D", self.device]
+            if self.infer_no_copy:
+                infer_cmd.append("--no-copy")
+            if self.infer_amp:
+                infer_cmd.append("--amp")
+            if self.infer_max_files is not None:
+                infer_cmd.extend(["--max-files", str(self.infer_max_files)])
+            if self.infer_workers and self.infer_workers > 1:
+                infer_cmd.extend(["--workers", str(self.infer_workers)])
             if self.verbose:
                 print(f"[opt] running infer.py with {temp_path.name}")
-            run_command(["python", "infer.py", "-C", str(temp_path), "-D", self.device], verbose=self.verbose)
+            run_command(infer_cmd, verbose=self.verbose)
             if self.verbose:
                 print(f"[opt] running evaluate.py for {temp_path.name}")
             run_command(["python", "evaluate.py", "--metric", INTRUSIVE_METRIC, "--config", str(temp_path)], verbose=self.verbose)
@@ -385,6 +423,8 @@ class ThresholdOptimizer:
             return row
         if self.mode not in ("per_gru", "l1"):
             return row
+        row["global_x"] = self.state["global_x"]
+        row["global_h"] = self.state["global_h"]
         self._fill_block_thresholds(row, "encoder_tra_blocks", "enctra")
         self._fill_block_thresholds(row, "decoder_tra_blocks", "dectra")
         self._fill_dp_thresholds(row, "dpgrnn1", 1)
@@ -429,6 +469,154 @@ class ThresholdOptimizer:
         if row is None:
             raise RuntimeError(f"No rows found in {csv_path}")
         return row
+
+    @staticmethod
+    def _parse_optional_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped == "":
+                    return None
+                return float(stripped)
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _state_from_row(self, row: Dict[str, str]) -> dict:
+        state = build_initial_state(0.0, self.mode)
+        gx = self._parse_optional_float(row.get("global_x"))
+        gh = self._parse_optional_float(row.get("global_h"))
+        fallback = self._parse_optional_float(row.get("global"))
+        if gx is None:
+            gx = fallback
+        if gh is None:
+            gh = fallback
+        if gx is not None:
+            state["global_x"] = gx
+        if gh is not None:
+            state["global_h"] = gh
+
+        for key, raw in row.items():
+            val = self._parse_optional_float(raw)
+            if val is None:
+                continue
+            enc_match = re.match(r"enctra(\d+)_(x|h)$", key)
+            if enc_match:
+                idx, axis = enc_match.groups()
+                enc_idx = int(idx)
+                if 0 <= enc_idx < len(state["encoder_tra_blocks"]):
+                    state["encoder_tra_blocks"][enc_idx][axis] = val
+                continue
+            dec_match = re.match(r"dectra(\d+)_(x|h)$", key)
+            if dec_match:
+                idx, axis = dec_match.groups()
+                dec_idx = int(idx)
+                if 0 <= dec_idx < len(state["decoder_tra_blocks"]):
+                    state["decoder_tra_blocks"][dec_idx][axis] = val
+                continue
+            dp_match = re.match(r"dp(1|2)(intra|inter)(1|2)_(x|h)$", key)
+            if dp_match:
+                dp_idx, stage, branch, axis = dp_match.groups()
+                target = state[f"dpgrnn{dp_idx}"]
+                stage_key = f"{stage}_rnn{branch}"
+                target[stage_key][axis] = val
+                continue
+        # Fill missing global_x/global_h using first non-None component value
+        if gx is None:
+            for section in ("encoder_tra_blocks", "decoder_tra_blocks"):
+                for block in state[section]:
+                    if block["x"] is not None:
+                        gx = block["x"]
+                        break
+                if gx is not None:
+                    break
+            if gx is None:
+                for dp_name in ("dpgrnn1", "dpgrnn2"):
+                    for sub in state[dp_name].values():
+                        if sub["x"] is not None:
+                            gx = sub["x"]
+                            break
+                    if gx is not None:
+                        break
+        if gh is None:
+            for section in ("encoder_tra_blocks", "decoder_tra_blocks"):
+                for block in state[section]:
+                    if block["h"] is not None:
+                        gh = block["h"]
+                        break
+                if gh is not None:
+                    break
+            if gh is None:
+                for dp_name in ("dpgrnn1", "dpgrnn2"):
+                    for sub in state[dp_name].values():
+                        if sub["h"] is not None:
+                            gh = sub["h"]
+                            break
+                    if gh is not None:
+                        break
+        if gx is not None:
+            state["global_x"] = gx
+        if gh is not None:
+            state["global_h"] = gh
+        return state
+
+    def _load_l1_resume_info(self) -> dict:
+        if self.csv_output is None:
+            raise RuntimeError("Cannot resume l1 near-search without --csv-output")
+        if not self.csv_output.is_file():
+            raise FileNotFoundError(f"Resume requested but summary CSV is missing at {self.csv_output}")
+        with self.csv_output.open() as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        if not rows:
+            raise RuntimeError(f"Resume requested but no rows found in {self.csv_output}")
+
+        cache: Dict[Tuple, float] = {}
+        best_metric = -float("inf")
+        best_state: Optional[dict] = None
+
+        for row in rows:
+            metric = self._parse_optional_float(row.get("metric"))
+            state = self._state_from_row(row)
+            sig = state_signature(state)
+            if metric is not None:
+                cache[sig] = metric
+                if metric > best_metric:
+                    best_metric = metric
+                    best_state = copy.deepcopy(state)
+
+        # Baseline from the first row of the sweep (original baseline run)
+        baseline_state = self._state_from_row(rows[0])
+        baseline_metric = self._parse_optional_float(rows[0].get("metric"))
+        if baseline_metric is None:
+            raise RuntimeError(f"Could not parse baseline metric from {self.csv_output}")
+
+        run_dirs = [p for p in self.pickle_root.glob(f"{RUN_DIR_PREFIX}*") if p.is_dir()]
+        run_dirs = sorted(run_dirs, key=lambda p: parse_run_index(p)[0])
+        run_dirs = [p for p in run_dirs if parse_run_index(p)[0] >= 0 and (p / RUN_CSV_NAME).is_file()]
+        if not run_dirs:
+            raise RuntimeError(f"Resume requested but no run_* folders with {RUN_CSV_NAME} found under {self.pickle_root}")
+        last_dir = run_dirs[-1]
+        last_row = self._read_threshold_row(last_dir / RUN_CSV_NAME)
+        resume_state = self._state_from_row(last_row)
+
+        next_run_index = parse_run_index(last_dir)[0] + 1
+
+        if best_metric == -float("inf"):
+            best_metric = None
+
+        return {
+            "cache": cache,
+            "best_metric": best_metric,
+            "best_state": best_state,
+            "baseline_metric": baseline_metric,
+            "baseline_state": baseline_state,
+            "rows": rows,
+            "next_run_index": next_run_index,
+            "resume_state": resume_state,
+        }
 
     def _load_split_resume_info(self) -> dict:
         run_dirs = [p for p in self.pickle_root.glob(f"{RUN_DIR_PREFIX}*") if p.is_dir()]
@@ -638,17 +826,47 @@ class ThresholdOptimizer:
             raise RuntimeError("near-search strategy is only supported for mode 'l1'")
         step = max(self.min_step, 1e-9)
         rows: List[dict] = []
+        baseline_metric: Optional[float] = None
+        initial_state: Optional[dict] = None
 
-        # Start from the user-provided baseline applied to all groups
-        self._apply_baseline_thresholds(self.near_baseline_x, self.near_baseline_h)
-        run_dir, log_base = self._prepare_run_workspace()
-        baseline_metric = self.evaluate(log_base=log_base)
-        baseline_row = {"threshold": 0.0, "metric": baseline_metric}
-        baseline_row.update(self._threshold_config_row())
-        rows.append(baseline_row)
-        self._finalize_run_outputs(run_dir, log_base, baseline_row)
-        self.best_metric = baseline_metric
-        self.best_state = copy.deepcopy(self.state)
+        if self.resume_l1 and self.l1_resume_info is not None:
+            rows = [dict(r) for r in self.l1_resume_info["rows"]]
+            baseline_metric = self.l1_resume_info["baseline_metric"]
+            self.state = copy.deepcopy(self.l1_resume_info["resume_state"])
+            baseline_state = self.l1_resume_info["baseline_state"]
+            # Warn if CLI baseline differs from saved baseline, but keep CLI values
+            saved_x = baseline_state.get("global_x")
+            saved_h = baseline_state.get("global_h")
+            if saved_x is not None and abs(saved_x - self.near_baseline_x) > 1e-9:
+                print(
+                    f"[opt] warning: saved baseline x={saved_x} differs from --near-baseline-x={self.near_baseline_x}; "
+                    f"using CLI value"
+                )
+            if saved_h is not None and abs(saved_h - self.near_baseline_h) > 1e-9:
+                print(
+                    f"[opt] warning: saved baseline h={saved_h} differs from --near-baseline-h={self.near_baseline_h}; "
+                    f"using CLI value"
+                )
+            if self.best_metric is None:
+                self.best_metric = self.l1_resume_info["best_metric"]
+            if self.best_state is None and self.l1_resume_info["best_state"] is not None:
+                self.best_state = copy.deepcopy(self.l1_resume_info["best_state"])
+            initial_state = copy.deepcopy(self.state)
+        else:
+            # Start from the user-provided baseline applied to all groups
+            self._apply_baseline_thresholds(self.near_baseline_x, self.near_baseline_h)
+            run_dir, log_base = self._prepare_run_workspace()
+            baseline_metric = self.evaluate(log_base=log_base)
+            baseline_row = {"threshold": 0.0, "metric": baseline_metric}
+            baseline_row.update(self._threshold_config_row())
+            rows.append(baseline_row)
+            self._finalize_run_outputs(run_dir, log_base, baseline_row)
+            self.best_metric = baseline_metric
+            self.best_state = copy.deepcopy(self.state)
+            initial_state = copy.deepcopy(self.state)
+
+        if baseline_metric is None:
+            raise RuntimeError("Baseline metric is missing; cannot continue near-search")
 
         def _update_best(metric: float):
             if self.best_metric is None or metric > self.best_metric:
@@ -656,32 +874,88 @@ class ThresholdOptimizer:
                 self.best_state = copy.deepcopy(self.state)
 
         groups = ("encoder", "dpgrnn1", "dpgrnn2", "decoder")
-        for group in groups:
-            # Reset everything to the baseline before exploring this group
-            self._apply_baseline_thresholds(self.near_baseline_x, self.near_baseline_h)
 
-            for axis, base_value in (("x", self.near_baseline_x), ("h", self.near_baseline_h)):
-                current_value = base_value
+        def _metric_ok(metric: float) -> bool:
+            return not self._metric_below_limit(metric, baseline_metric)
+
+        def _start_value_for(group: str, axis: str) -> float:
+            if initial_state is None:
+                return self.near_baseline_x if axis == "x" else self.near_baseline_h
+            current = _get_group_threshold(initial_state, group, axis)
+            if current is None:
+                return self.near_baseline_x if axis == "x" else self.near_baseline_h
+            return current
+
+        def _evaluate_and_record(tag_value: float) -> bool:
+            iter_run_dir, iter_log_base = self._prepare_run_workspace()
+            metric = self.evaluate(log_base=iter_log_base)
+            row = {"threshold": tag_value, "metric": metric}
+            row.update(self._threshold_config_row())
+            rows.append(row)
+            self._finalize_run_outputs(iter_run_dir, iter_log_base, row)
+            _update_best(metric)
+            return _metric_ok(metric)
+
+        def _reset_inner(end_index: int):
+            for idx in range(end_index):
+                inner_group = groups[idx]
+                _set_group_threshold(self.state, inner_group, "x", _start_value_for(inner_group, "x"))
+                _set_group_threshold(self.state, inner_group, "h", _start_value_for(inner_group, "h"))
+
+        def _optimize_chain(level: int) -> bool:
+            """Optimize groups[0..level] with nested x-then-h sweeps, returning True if any step succeeded."""
+            group = groups[level]
+            has_success = False
+            h_value = _start_value_for(group, "h")
+            last_good_h = h_value
+
+            while True:  # Sweep x for the current h, then try to bump h
+                x_value = _start_value_for(group, "x")
+                last_good_x = x_value
                 while True:
-                    candidate = current_value + step
-                    if candidate > self.max_threshold + 1e-9:
+                    candidate_x = x_value + step
+                    if candidate_x > self.max_threshold + 1e-9:
                         break
-                    _set_group_threshold(self.state, group, axis, candidate)
-                    iter_run_dir, iter_log_base = self._prepare_run_workspace()
-                    metric = self.evaluate(log_base=iter_log_base)
-                    row = {"threshold": candidate, "metric": metric}
-                    row.update(self._threshold_config_row())
-                    rows.append(row)
-                    self._finalize_run_outputs(iter_run_dir, iter_log_base, row)
-                    _update_best(metric)
-                    if self._metric_below_limit(metric, baseline_metric):
-                        # Revert to the last safe value before moving on
-                        _set_group_threshold(self.state, group, axis, current_value)
+                    _set_group_threshold(self.state, group, "x", candidate_x)
+                    _set_group_threshold(self.state, group, "h", h_value)
+                    _reset_inner(level)
+                    if level > 0:
+                        success = _optimize_chain(level - 1)
+                    else:
+                        success = _evaluate_and_record(candidate_x)
+                    if not success:
+                        _set_group_threshold(self.state, group, "x", last_good_x)
                         break
-                    current_value = candidate
-            # Ensure we leave the group at baseline before the next group
-            _set_group_threshold(self.state, group, "x", self.near_baseline_x)
-            _set_group_threshold(self.state, group, "h", self.near_baseline_h)
+                    has_success = True
+                    x_value = candidate_x
+                    last_good_x = x_value
+
+                candidate_h = h_value + step
+                if candidate_h > self.max_threshold + 1e-9:
+                    _set_group_threshold(self.state, group, "h", last_good_h)
+                    _set_group_threshold(self.state, group, "x", last_good_x)
+                    break
+                _set_group_threshold(self.state, group, "h", candidate_h)
+                _set_group_threshold(self.state, group, "x", self.near_baseline_x)
+                _reset_inner(level)
+                if level > 0:
+                    success = _optimize_chain(level - 1)
+                else:
+                    success = _evaluate_and_record(candidate_h)
+                if not success:
+                    _set_group_threshold(self.state, group, "h", last_good_h)
+                    _set_group_threshold(self.state, group, "x", last_good_x)
+                    break
+                has_success = True
+                h_value = candidate_h
+                last_good_h = h_value
+
+            return has_success
+
+        # Run the cascaded search: start with the innermost group, then grow outward
+        max_level = len(groups) - 1
+        for level in range(max_level + 1):
+            _optimize_chain(level)
 
         self._write_summary_csv(rows)
         if self.apply_best_to is not None and self.best_state is not None:
@@ -703,14 +977,20 @@ class ThresholdOptimizer:
         baseline_metric: Optional[float] = None
         start_time = time.time()
 
-        h_value = self.resume_info["start_h"] if self.resume_info else 0.0
+        if self.resume_info:
+            h_value = self.resume_info["start_h"]
+        else:
+            h_value = self.split_start_h if self.split_start_h is not None else 0.0
         stop_all = False
         initial_failures = 0
         resume_active = self.resume_info is not None
         first_h_iteration = True
         while h_value <= self.max_threshold + 1e-9 and not stop_all:
             h_param.setter(self.state, h_value)
-            x_value = self.resume_info["start_x"] if (resume_active and first_h_iteration) else 0.0
+            if resume_active and first_h_iteration:
+                x_value = self.resume_info["start_x"]
+            else:
+                x_value = self.split_start_x if self.split_start_x is not None else 0.0
             first_iteration = True
             drop_violation = False
             if self.verbose and self.max_initial_failures > 0:
@@ -903,10 +1183,24 @@ def main():
                         help="Stop split sweep when consecutive h values immediately violate min-metric")
     parser.add_argument("--resume-split", action="store_true",
                         help="Resume split sweep: restart from the last completed (run_*) thresholds and continue with x+=step")
+    parser.add_argument("--resume-l1", action="store_true",
+                        help="Resume l1 near-search: reuse prior runs and summary CSV to continue search")
+    parser.add_argument("--split-x", type=float, default=None,
+                        help="Starting x threshold for split sweeps (mode=split, strategy=sweep)")
+    parser.add_argument("--split-h", type=float, default=None,
+                        help="Starting h threshold for split sweeps (mode=split, strategy=sweep)")
     parser.add_argument("--near-baseline-x", type=float, default=0.0,
                         help="Baseline x threshold used to seed near-search (applied to all groups)")
     parser.add_argument("--near-baseline-h", type=float, default=0.0,
                         help="Baseline h threshold used to seed near-search (applied to all groups)")
+    parser.add_argument("--infer-max-files", type=int, default=None,
+                        help="Limit inference to the first N files (speeds sweeps; affects metrics).")
+    parser.add_argument("--infer-no-copy", action="store_true",
+                        help="Skip copying noisy/clean wavs into enh_folder to cut I/O.")
+    parser.add_argument("--infer-amp", action="store_true",
+                        help="Enable mixed precision in infer.py (CUDA only).")
+    parser.add_argument("--infer-workers", type=int, default=1,
+                        help="Number of parallel infer.py workers (each loads its own model).")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -916,6 +1210,17 @@ def main():
         parser.error("near-search strategy is only supported with --mode l1")
     if args.mode == "l1" and args.strategy != "near-search":
         parser.error("mode l1 requires --strategy near-search")
+    if args.resume_l1 and (args.mode != "l1" or args.strategy != "near-search"):
+        parser.error("--resume-l1 is only supported for l1 near-search")
+    if args.resume_l1 and args.resume_split:
+        parser.error("Cannot combine --resume-l1 with --resume-split")
+    if (args.split_x is None) != (args.split_h is None):
+        parser.error("--split-x and --split-h must both be provided")
+    if args.split_x is not None:
+        if args.mode != "split" or args.strategy != "sweep":
+            parser.error("--split-x/--split-h are only supported for split sweeps (strategy=sweep, mode=split)")
+        if args.resume_split:
+            parser.error("Cannot combine --split-x/--split-h with --resume-split")
 
     optimizer = ThresholdOptimizer(
         infer_config=Path(args.infer_config),
@@ -934,8 +1239,15 @@ def main():
         csv_output=Path(args.csv_output).resolve() if args.csv_output else None,
         max_initial_failures=args.max_initial_failures,
         resume_split=args.resume_split,
+        resume_l1=args.resume_l1,
+        split_start_x=args.split_x,
+        split_start_h=args.split_h,
         near_baseline_x=args.near_baseline_x,
         near_baseline_h=args.near_baseline_h,
+        infer_max_files=args.infer_max_files,
+        infer_no_copy=args.infer_no_copy,
+        infer_amp=args.infer_amp,
+        infer_workers=args.infer_workers,
     )
     optimizer.run()
     best = optimizer.best_metric if optimizer.best_metric is not None else float("nan")

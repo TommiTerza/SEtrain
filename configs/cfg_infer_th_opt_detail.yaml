@@ -20,13 +20,13 @@ network:
   config: ${network.exp_path}/config.yaml
   ckpt_name: best_model_111
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced
+  enh_folder: /home/terzano/Desktop/NNs/SEtrain/logs/threshold_opt_detail/enhanced
   # Optional overrides for DeltaGRU inference; leave as null to use the experiment defaults.
   use_delta_gru: true
 
   # These two are global thresholds; if you want to set per-layer thresholds, leave these as null.
-  delta_gru_threshold_x: 10
-  delta_gru_threshold_h: 10
+  delta_gru_threshold_x: 0
+  delta_gru_threshold_h: 0
 
   delta_gru_thresholds:
     encoder_tra_blocks: [null, null, null]   # order matches the 3 encoder GTConvBlocks (shallow->deep)
