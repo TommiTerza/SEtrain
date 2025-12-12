@@ -189,7 +189,7 @@ def make_parameters(mode: str, initial: float) -> List[ThresholdParam]:
                     setter=lambda s, v, block=block, comp=comp: s[block][comp].__setitem__("h", v),
                 ))
     else:
-        if mode != "l1":
+        if mode not in ("l1", "sensitivity"):
             raise ValueError(f"Unsupported mode {mode}")
         for group in ("encoder", "dpgrnn1", "dpgrnn2", "decoder"):
             params.append(ThresholdParam(
@@ -238,6 +238,7 @@ class ThresholdOptimizer:
         max_initial_failures: int = 0,
         resume_split: bool = False,
         resume_l1: bool = False,
+        resume_sensitivity: bool = False,
         split_start_x: Optional[float] = None,
         split_start_h: Optional[float] = None,
         near_baseline_x: float = 0.0,
@@ -246,6 +247,7 @@ class ThresholdOptimizer:
         infer_no_copy: bool = False,
         infer_amp: bool = False,
         infer_workers: int = 1,
+        sens_block: Optional[str] = None,
     ):
         self.infer_writer = ConfigWriter(infer_config)
         self.work_dir = work_dir
@@ -267,14 +269,19 @@ class ThresholdOptimizer:
         self.params = make_parameters(mode, 0.0)
         self.threshold_columns = self._build_threshold_columns()
         self.csv_fieldnames = ["threshold"] + self.threshold_columns + ["metric"]
+        if self.mode == "sensitivity":
+            self.csv_fieldnames = ["block"] + self.csv_fieldnames
         self.cache: Dict[Tuple, float] = {}
         self.best_metric: Optional[float] = None
         self.best_state: Optional[dict] = None
         self.max_initial_failures = max_initial_failures
         self.resume_split = resume_split
         self.resume_l1 = resume_l1
+        self.resume_sensitivity = resume_sensitivity
         self.resume_info: Optional[dict] = None
         self.l1_resume_info: Optional[dict] = None
+        self.sensitivity_resume_info: Optional[dict] = None
+        self.sens_block = sens_block
         self.split_start_x = split_start_x
         self.split_start_h = split_start_h
         self.near_baseline_x = near_baseline_x
@@ -291,7 +298,7 @@ class ThresholdOptimizer:
         if self.resume_split and (self.split_start_x is not None or self.split_start_h is not None):
             raise ValueError("Cannot combine resume_split with explicit split start thresholds")
 
-        if self.resume_split or self.resume_l1:
+        if self.resume_split or self.resume_l1 or self.resume_sensitivity:
             self.pickle_root.mkdir(parents=True, exist_ok=True)
         else:
             if self.pickle_root.exists():
@@ -311,6 +318,13 @@ class ThresholdOptimizer:
             self.best_state = copy.deepcopy(self.l1_resume_info["best_state"]) if self.l1_resume_info["best_state"] is not None else None
             self.run_counter = self.l1_resume_info["next_run_index"]
             self.state = copy.deepcopy(self.l1_resume_info["resume_state"])
+        elif self.resume_sensitivity:
+            self.sensitivity_resume_info = self._load_sensitivity_resume_info()
+            self.cache.update(self.sensitivity_resume_info["cache"])
+            best_metric = self.sensitivity_resume_info["best_metric"]
+            self.best_metric = best_metric if best_metric != -float("inf") else None
+            self.best_state = copy.deepcopy(self.sensitivity_resume_info["best_state"]) if self.sensitivity_resume_info["best_state"] is not None else None
+            self.run_counter = self.sensitivity_resume_info["next_run_index"]
 
     def evaluate(self, log_base: Optional[Path] = None) -> float:
         sig = state_signature(self.state)
@@ -421,7 +435,7 @@ class ThresholdOptimizer:
             row["global_x"] = self.state["global_x"]
             row["global_h"] = self.state["global_h"]
             return row
-        if self.mode not in ("per_gru", "l1"):
+        if self.mode not in ("per_gru", "l1", "sensitivity"):
             return row
         row["global_x"] = self.state["global_x"]
         row["global_h"] = self.state["global_h"]
@@ -469,6 +483,24 @@ class ThresholdOptimizer:
         if row is None:
             raise RuntimeError(f"No rows found in {csv_path}")
         return row
+
+    def _load_rows_from_runs(self) -> List[dict]:
+        """Reconstruct sweep rows by reading the per-run CSVs in the work dir."""
+        run_dirs = [p for p in self.pickle_root.glob(f"{RUN_DIR_PREFIX}*") if p.is_dir()]
+        run_dirs = sorted(run_dirs, key=lambda p: parse_run_index(p)[0])
+        rows: List[dict] = []
+        for run_dir in run_dirs:
+            index, _ = parse_run_index(run_dir)
+            if index < 0:
+                continue
+            csv_path = run_dir / RUN_CSV_NAME
+            if not csv_path.is_file():
+                continue
+            try:
+                rows.append(self._read_threshold_row(csv_path))
+            except RuntimeError:
+                continue
+        return rows
 
     @staticmethod
     def _parse_optional_float(value) -> Optional[float]:
@@ -668,6 +700,105 @@ class ThresholdOptimizer:
             "baseline_state": {"global_x": baseline_x, "global_h": baseline_h},
         }
 
+    def _load_sensitivity_resume_info(self) -> dict:
+        rows = self._load_rows_from_runs()
+        groups = self._sensitivity_groups()
+        if self.sens_block:
+            rows = [r for r in rows if r.get("block") == self.sens_block]
+        loaded_from_csv = False
+        if not rows and self.csv_output is not None and self.csv_output.is_file():
+            with self.csv_output.open() as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            if self.sens_block:
+                rows = [r for r in rows if r.get("block") == self.sens_block]
+            loaded_from_csv = True
+        if not rows:
+            raise RuntimeError(
+                "Resume requested but no completed sensitivity runs were found. "
+                "Ensure the work directory contains run_* folders with thresholds.csv."
+            )
+
+        cache: Dict[Tuple, float] = {}
+        best_metric = -float("inf")
+        best_state: Optional[dict] = None
+
+        for row in rows:
+            metric = self._parse_optional_float(row.get("metric"))
+            state = self._state_from_row(row)
+            sig = state_signature(state)
+            if metric is not None:
+                cache[sig] = metric
+                if metric > best_metric:
+                    best_metric = metric
+                    best_state = copy.deepcopy(state)
+
+        run_dirs = [p for p in self.pickle_root.glob(f"{RUN_DIR_PREFIX}*") if p.is_dir()]
+        run_dirs = [p for p in run_dirs if parse_run_index(p)[0] >= 0 and (p / RUN_CSV_NAME).is_file()]
+        run_dirs = sorted(run_dirs, key=lambda p: parse_run_index(p)[0])
+        next_run_index = len(rows)
+        if run_dirs:
+            last_dir = run_dirs[-1]
+            index, _ = parse_run_index(last_dir)
+            if index >= 0:
+                next_run_index = max(next_run_index, index + 1)
+
+        last_row = rows[-1]
+        last_group = last_row.get("block")
+        if last_group not in groups:
+            source = str(self.csv_output) if loaded_from_csv and self.csv_output is not None else str(self.pickle_root)
+            raise RuntimeError(f"Could not determine the last block from {source}")
+
+        baseline_metric: Optional[float] = None
+        for row in rows:
+            if row.get("block") == last_group:
+                baseline_metric = self._parse_optional_float(row.get("metric"))
+                break
+        if baseline_metric is None:
+            source = str(self.csv_output) if loaded_from_csv and self.csv_output is not None else str(self.pickle_root)
+            raise RuntimeError(f"Could not parse baseline metric for block '{last_group}' from {source}")
+
+        last_state = self._state_from_row(last_row)
+        last_x = _get_group_threshold(last_state, last_group, "x") or 0.0
+        last_h = _get_group_threshold(last_state, last_group, "h") or 0.0
+        last_metric = self._parse_optional_float(last_row.get("metric"))
+        if last_metric is None:
+            source = str(self.csv_output) if loaded_from_csv and self.csv_output is not None else str(self.pickle_root)
+            raise RuntimeError(f"Last row in {source} is missing a metric value")
+
+        step = max(self.min_step, 1e-9)
+        next_group_index = groups.index(last_group)
+        if self._metric_below_limit(last_metric, baseline_metric):
+            next_x = 0.0
+            next_h = last_h + step
+        else:
+            candidate_x = last_x + step
+            if candidate_x <= self.max_threshold + 1e-9:
+                next_x = candidate_x
+                next_h = last_h
+            else:
+                next_x = 0.0
+                next_h = last_h + step
+        if next_h > self.max_threshold + 1e-9:
+            next_group_index += 1
+            next_x = 0.0
+            next_h = 0.0
+            baseline_metric = None
+        if next_group_index > len(groups):
+            next_group_index = len(groups)
+
+        return {
+            "rows": rows,
+            "cache": cache,
+            "best_metric": best_metric,
+            "best_state": best_state,
+            "next_run_index": next_run_index,
+            "baseline_metric": baseline_metric,
+            "next_group_index": next_group_index,
+            "x_value": next_x,
+            "h_value": next_h,
+        }
+
     def _prepare_run_workspace(self) -> Tuple[Path, Path]:
         run_name = f"{RUN_DIR_PREFIX}{self.run_counter}"
         run_dir = self.pickle_root / run_name
@@ -719,6 +850,11 @@ class ThresholdOptimizer:
             dp_idx, stage, axis, branch = match.groups()
             return f"dp{dp_idx}{stage}{branch}_{axis}"
         return name
+
+    def _sensitivity_groups(self) -> Tuple[str, ...]:
+        if self.sens_block:
+            return (self.sens_block,)
+        return ("encoder", "dpgrnn1", "dpgrnn2", "decoder")
 
     def _write_run_csv(self, run_dir: Path, row: dict):
         csv_path = run_dir / RUN_CSV_NAME
@@ -873,7 +1009,7 @@ class ThresholdOptimizer:
                 self.best_metric = metric
                 self.best_state = copy.deepcopy(self.state)
 
-        groups = ("encoder", "dpgrnn1", "dpgrnn2", "decoder")
+        groups = self._sensitivity_groups()
 
         def _metric_ok(metric: float) -> bool:
             return not self._metric_below_limit(metric, baseline_metric)
@@ -1138,7 +1274,91 @@ class ThresholdOptimizer:
             writer = ConfigWriter(self.apply_best_to)
             writer.write_to(self.apply_best_to, cfg_dict)
 
+    def run_sensitivity(self):
+        if self.mode != "sensitivity":
+            raise RuntimeError("Sensitivity mode is only available with --mode sensitivity")
+        step = max(self.min_step, 1e-9)
+        rows: List[dict] = []
+        best_metric = -float("inf")
+        best_state: Optional[dict] = None
+        groups = self._sensitivity_groups()
+        start_time = time.time()
+
+        start_group_index = 0
+        resume_h = 0.0
+        resume_x = 0.0
+        resume_baseline: Optional[float] = None
+        resume_active = False
+        if self.resume_sensitivity and self.sensitivity_resume_info is not None:
+            rows = [dict(r) for r in self.sensitivity_resume_info["rows"]]
+            cached_best = self.sensitivity_resume_info["best_metric"]
+            if cached_best is not None and cached_best != -float("inf"):
+                best_metric = cached_best
+            best_state = copy.deepcopy(self.sensitivity_resume_info["best_state"]) if self.sensitivity_resume_info["best_state"] is not None else None
+            start_group_index = self.sensitivity_resume_info["next_group_index"]
+            resume_h = self.sensitivity_resume_info["h_value"]
+            resume_x = self.sensitivity_resume_info["x_value"]
+            resume_baseline = self.sensitivity_resume_info["baseline_metric"]
+            resume_active = start_group_index < len(groups)
+
+        for idx, group in enumerate(groups):
+            if idx < start_group_index:
+                continue
+            # Reset thresholds so only the current group is swept; others stay at zero
+            self.state = build_initial_state(0.0, self.mode)
+            for reset_group in groups:
+                _set_group_threshold(self.state, reset_group, "x", 0.0)
+                _set_group_threshold(self.state, reset_group, "h", 0.0)
+
+            baseline_metric: Optional[float] = resume_baseline if resume_active and idx == start_group_index else None
+            h_value = resume_h if resume_active and idx == start_group_index else 0.0
+            first_h_iteration = True
+            while h_value <= self.max_threshold + 1e-9:
+                if resume_active and idx == start_group_index and first_h_iteration:
+                    x_value = resume_x
+                else:
+                    x_value = 0.0
+                first_h_iteration = False
+                while x_value <= self.max_threshold + 1e-9:
+                    iter_start = time.time()
+                    run_dir, log_base = self._prepare_run_workspace()
+                    _set_group_threshold(self.state, group, "x", x_value)
+                    _set_group_threshold(self.state, group, "h", h_value)
+                    metric = self.evaluate(log_base=log_base)
+                    if baseline_metric is None:
+                        baseline_metric = metric
+                    row = {"block": group, "threshold": x_value, "metric": metric}
+                    row.update(self._threshold_config_row())
+                    rows.append(row)
+                    self._finalize_run_outputs(run_dir, log_base, row)
+                    if metric > best_metric:
+                        best_metric = metric
+                        best_state = copy.deepcopy(self.state)
+                    if self.verbose:
+                        elapsed = time.time() - iter_start
+                        elapsed_total = (time.time() - start_time) / 60
+                        print(
+                            f"[opt] sensitivity sweep {group}: x={x_value:.4f}, h={h_value:.4f} "
+                            f"-> metric {metric:.4f} (step {elapsed:.1f}s, total {elapsed_total:.1f}m)"
+                        )
+                    if self._metric_below_limit(metric, baseline_metric):
+                        break
+                    x_value += step
+                h_value += step
+            resume_active = False
+
+        self._write_summary_csv(rows)
+        self.best_metric = best_metric if best_metric != -float("inf") else None
+        self.best_state = best_state
+        if self.apply_best_to is not None and best_state is not None:
+            cfg_dict = build_thresholds_dict(best_state)
+            writer = ConfigWriter(self.apply_best_to)
+            writer.write_to(self.apply_best_to, cfg_dict)
+
     def run(self):
+        if self.mode == "sensitivity":
+            self.run_sensitivity()
+            return
         if self.mode == "l1" and self.strategy != "near-search":
             raise RuntimeError("Mode 'l1' requires strategy 'near-search'")
         if self.strategy == "coordinate":
@@ -1155,7 +1375,7 @@ def main():
     parser = argparse.ArgumentParser(description="Optimize DeltaGRU thresholds via divide-and-conquer or sweep search")
     parser.add_argument("--infer-config", default="configs/cfg_infer.yaml", help="Inference config path")
     parser.add_argument("--train-config", default=None, help="Optional cfg_train.yaml to update with best thresholds")
-    parser.add_argument("--mode", choices=["global", "split", "per_gru", "l1"], default="global")
+    parser.add_argument("--mode", choices=["global", "split", "per_gru", "l1", "sensitivity"], default="global")
     parser.add_argument("--strategy", choices=["coordinate", "sweep", "near-search"], default="coordinate")
     parser.add_argument("--metric", choices=list(RESULT_METRICS), default="PESQ")
     parser.add_argument("--max-threshold", type=float, default=1.0, help="Upper bound for thresholds")
@@ -1185,6 +1405,10 @@ def main():
                         help="Resume split sweep: restart from the last completed (run_*) thresholds and continue with x+=step")
     parser.add_argument("--resume-l1", action="store_true",
                         help="Resume l1 near-search: reuse prior runs and summary CSV to continue search")
+    parser.add_argument("--resume-sensitivity", action="store_true",
+                        help="Resume sensitivity sweep using the existing summary CSV and run folders")
+    parser.add_argument("--sens-block", choices=["encoder", "decoder", "dpgrnn1", "dpgrnn2"], default=None,
+                        help="When in sensitivity mode, restrict the sweep to a single block")
     parser.add_argument("--split-x", type=float, default=None,
                         help="Starting x threshold for split sweeps (mode=split, strategy=sweep)")
     parser.add_argument("--split-h", type=float, default=None,
@@ -1214,6 +1438,12 @@ def main():
         parser.error("--resume-l1 is only supported for l1 near-search")
     if args.resume_l1 and args.resume_split:
         parser.error("Cannot combine --resume-l1 with --resume-split")
+    if args.resume_sensitivity and args.mode != "sensitivity":
+        parser.error("--resume-sensitivity is only supported for sensitivity sweeps (mode=sensitivity)")
+    if args.resume_sensitivity and (args.resume_l1 or args.resume_split):
+        parser.error("Cannot combine --resume-sensitivity with other resume modes")
+    if args.sens_block and args.mode != "sensitivity":
+        parser.error("--sens-block is only valid in sensitivity mode")
     if (args.split_x is None) != (args.split_h is None):
         parser.error("--split-x and --split-h must both be provided")
     if args.split_x is not None:
@@ -1240,6 +1470,7 @@ def main():
         max_initial_failures=args.max_initial_failures,
         resume_split=args.resume_split,
         resume_l1=args.resume_l1,
+        resume_sensitivity=args.resume_sensitivity,
         split_start_x=args.split_x,
         split_start_h=args.split_h,
         near_baseline_x=args.near_baseline_x,
@@ -1248,6 +1479,7 @@ def main():
         infer_no_copy=args.infer_no_copy,
         infer_amp=args.infer_amp,
         infer_workers=args.infer_workers,
+        sens_block=args.sens_block,
     )
     optimizer.run()
     best = optimizer.best_metric if optimizer.best_metric is not None else float("nan")

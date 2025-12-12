@@ -26,8 +26,11 @@ def per_component_columns() -> List[str]:
     return columns
 
 
-def threshold_csv_columns(include_metric: bool = True) -> List[str]:
-    columns = ["threshold", "global", "global_x", "global_h"]
+def threshold_csv_columns(include_metric: bool = True, include_block: bool = False) -> List[str]:
+    columns = []
+    if include_block:
+        columns.append("block")
+    columns.extend(["threshold", "global", "global_x", "global_h"])
     columns.extend(per_component_columns())
     if include_metric:
         columns.append("metric")

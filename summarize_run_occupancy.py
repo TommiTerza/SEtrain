@@ -88,17 +88,17 @@ def _build_threshold_lookup(row: dict, mode: str):
             return threshold_x if component == "x" else threshold_h
 
         return lookup
-    if mode not in ("per_gru", "l1"):
-        raise ValueError(f"Unsupported mode '{mode}' for threshold lookup")
-    per_component: Dict[Tuple[str, str], Optional[float]] = {}
-    for base in COMPONENT_BASES:
-        for comp in ("x", "h"):
-            per_component[(base, comp)] = _to_float(row.get(f"{base}_{comp}"))
+    if mode in ("per_gru", "l1", "sensitivity"):
+        per_component: Dict[Tuple[str, str], Optional[float]] = {}
+        for base in COMPONENT_BASES:
+            for comp in ("x", "h"):
+                per_component[(base, comp)] = _to_float(row.get(f"{base}_{comp}"))
 
-    def lookup(base: str, component: str) -> Optional[float]:
-        return per_component.get((base, component))
+        def lookup(base: str, component: str) -> Optional[float]:
+            return per_component.get((base, component))
 
-    return lookup
+        return lookup
+    raise ValueError(f"Unsupported mode '{mode}' for threshold lookup")
 
 
 def _process_run(
@@ -183,9 +183,9 @@ def main():
     parser.add_argument("--pkls-dir", default="logs/threshold_opt/pkls", help="Directory containing run_* folders")
     parser.add_argument(
         "--mode",
-        choices=["global", "split", "per_gru", "l1"],
+        choices=["global", "split", "per_gru", "l1", "sensitivity"],
         required=True,
-        help="Threshold layout to apply (l1 uses per-GRU thresholds grouped by block type)",
+        help="Threshold layout to apply (l1/sensitivity use per-GRU thresholds grouped by block type)",
     )
     parser.add_argument("--output", default="logs/threshold_opt/sweep.csv", help="Destination CSV for the sweep summary")
     parser.add_argument("--occupancy-threshold", type=float, default=1e-3,
@@ -225,9 +225,10 @@ def main():
 
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = threshold_csv_columns(include_metric=True) + ["x_avg", "h_avg", "global_avg"]
+    include_block = args.mode == "sensitivity"
+    fieldnames = threshold_csv_columns(include_metric=True, include_block=include_block) + ["x_avg", "h_avg", "global_avg"]
     with output_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     if args.verbose:

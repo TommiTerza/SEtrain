@@ -516,9 +516,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["global", "split", "per_gru", "l1", "compare"],
+        choices=["global", "split", "per_gru", "l1", "compare", "sensitivity"],
         default="global",
         help="Optimizer mode used to generate the sweep CSV (per_gru not implemented yet; l1 shows a compact overview).",
+    )
+    parser.add_argument(
+        "--block",
+        default=None,
+        help="For sensitivity mode, optionally plot only a single block (encoder/decoder/dpgrnn1/dpgrnn2).",
     )
     parser.add_argument(
         "--l1-block",
@@ -825,6 +830,48 @@ def main() -> None:
                 print(f"[plot] skipping {col} (l1 overview): {exc}")
             else:
                 print(f"[plot] wrote {path}")
+    elif mode == "sensitivity":
+        if "block" not in df.columns:
+            raise ValueError("Sensitivity mode requires a 'block' column in the CSV")
+        blocks = sorted(df["block"].dropna().unique())
+        if args.block:
+            if args.block not in blocks:
+                raise ValueError(f"Block '{args.block}' not found. Available: {', '.join(blocks)}")
+            blocks = [args.block]
+        for block in blocks:
+            df_block = df[df["block"] == block]
+            if df_block.empty:
+                continue
+            labels = [str(idx) for idx in range(len(df_block))]
+            highlight_mask = [idx == 0 for idx in range(len(df_block))]
+            overview_dir = output_dir / f"sensitivity_{block}"
+            for col in occ_columns:
+                path = overview_dir / f"{col}_vs_{metric_label}_sensitivity.png"
+                deriv_path = overview_dir / f"{col}_vs_{metric_label}_sensitivity_derivative.png"
+                try:
+                    _plot_scatter(
+                        df_block,
+                        col,
+                        metric_col,
+                        path,
+                        deriv_path,
+                        labels=labels,
+                        draw_trend=False,
+                        draw_derivative=False,
+                        highlight_pareto=args.pareto,
+                        metric_higher_is_better=metric_higher_is_better,
+                        use_nice_labels=args.nice_labels,
+                        interactive=args.interactive,
+                        show_labels=show_labels,
+                        label_less=label_less,
+                        highlight_mask=highlight_mask,
+                        highlight_style={"s": 36, "color": "green", "edgecolors": "black", "linewidths": 0.7},
+                        highlight_label="start (idx 0)",
+                    )
+                except ValueError as exc:
+                    print(f"[plot] skipping block {block} {col}: {exc}")
+                else:
+                    print(f"[plot] wrote {path}")
     else:
         raise NotImplementedError("per_gru mode is not implemented yet in plot_sweep_occupancy")
 

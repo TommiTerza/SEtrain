@@ -13,3 +13,5 @@ torch>=2.0.0
 torch_stoi==0.1.2
 tqdm==4.66.1
 tensorboard
+scipy>=1.11.0
+matplotlib>=3.8.0
