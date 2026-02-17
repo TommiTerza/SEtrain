@@ -1,28 +1,7 @@
 network_config:
-  n_fft: 256
-  hop_len: 128
-  win_len: 256
-  preprocess:
-    enable: true
-    highpass:
-      enable: true
-      cutoff_bin: 2
-      attenuation_db: 18.0
-    level:
-      enable: true
-      target_rms: 0.1
-      min_gain_db: -12.0
-      max_gain_db: 12.0
-    noise_shave:
-      enable: true
-      quantile: 0.1
-      scale: 1.0
-      floor_db: -40.0
-    wiener:
-      enable: true
-      noise_quantile: 0.1
-      aggressiveness: 1.5
-      min_gain: 0.25
+  n_fft: 512
+  hop_len: 256
+  win_len: 512
 
 DDP:
   world_size: 2
@@ -39,10 +18,16 @@ scheduler:
 
   update_interval: step  # [step, epoch]
 
+qat:
+  enabled: True
+  backend: fbgemm  # [fbgemm, qnnpack]
+  disable_observer_epoch: 160
+  freeze_bn_epoch: 160
+
 FFT:
-  n_fft: 256
-  hop_length: 128
-  win_length: 256
+  n_fft: 512
+  hop_length: 256
+  win_length: 512
 
 loss:
   n_fft: ${FFT.n_fft}
@@ -70,20 +55,8 @@ validation_dataset:
   length_in_seconds: 10
   random_start_point: False
   train: False
-  split: validation
 
 validation_dataloader:
-  batch_size: 4
-  num_workers: 4
-  pin_memory: True
-
-test_dataset: 
-  length_in_seconds: 10
-  random_start_point: False
-  train: False
-  split: test
-
-test_dataloader:
   batch_size: 4
   num_workers: 4
   pin_memory: True
@@ -94,6 +67,6 @@ trainer:
   epochs: 200
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn
+  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn
   resume: False
   resume_datetime: 2024-12-31-14h28m

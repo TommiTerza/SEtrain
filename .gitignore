@@ -1,6 +1,0 @@
-/data/*
-*/__pycache__/
-*.pyc
-*.pyo
-logs/
-experiments/

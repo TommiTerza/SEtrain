@@ -32,7 +32,9 @@ When starting a new SE project, you should follow these steps:
    python train.py -C configs/cfg_train.yaml -D 1
    python train.py -C configs/cfg_train.yaml -D 0,1,2,3
    ```
+   To enable quantization-aware training (QAT), set `qat.enabled: True` in `configs/cfg_train.yaml`.
 6. After training finished, specify your checkpoint and paths in `configs/cfg_infer.yaml`;
+   for QAT checkpoints, set `network.use_int8: True` to convert and run int8 inference on CPU.
 7. Run `evaluate.py`.
 
 ## Note

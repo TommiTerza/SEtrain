@@ -18,7 +18,7 @@ from distributed_utils import reduce_value
 
 from models.gtcrn_end2end import GTCRN as Model
 from loss_factory import HybridLoss as Loss
-from dataloader import VoiceBankDemandDataset as Dataset
+from dataloader_dns3 import DNS3Dataset as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
 seed = 43
@@ -26,13 +26,13 @@ random.seed(seed)
 os.environ['PYTHONHASHSEED'] = str(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+# torch.backends.cudnn.deterministic = True
 
 
 def run(rank, config, args):
-    if args.use_cuda and args.world_size > 1:
+    if args.world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12354'
         dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
@@ -40,34 +40,22 @@ def run(rank, config, args):
         dist.barrier()
 
     args.rank = rank
-    if args.use_cuda:
-        args.device = torch.device(f"cuda:{rank}")
-    else:
-        args.device = torch.device("cpu")
+    args.device = torch.device(rank)
     
     collate_fn = Dataset.collate_fn if hasattr(Dataset, "collate_fn") else None
     # config['train_dataloader']['batch_size'] = config['train_dataloader']['batch_size'] // args.world_size
     shuffle = False if args.world_size > 1 else True
 
-    if not args.use_cuda:
-        for loader_key in ("train_dataloader", "validation_dataloader", "test_dataloader"):
-            if loader_key in config:
-                loader_cfg = config[loader_key]
-                if 'num_workers' in loader_cfg:
-                    loader_cfg['num_workers'] = 0
-                if 'pin_memory' in loader_cfg:
-                    loader_cfg['pin_memory'] = False
-
     train_dataset = Dataset(**config['train_dataset'])
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if args.use_cuda and args.world_size > 1 else None
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if args.world_size > 1 else None
     train_dataloader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                     sampler=train_sampler,
                                                     **config['train_dataloader'],
                                                     shuffle=shuffle,
                                                     collate_fn=collate_fn)
-
+    
     validation_dataset = Dataset(**config['validation_dataset'])
-    validation_sampler = torch.utils.data.distributed.DistributedSampler(validation_dataset) if args.use_cuda and args.world_size > 1 else None
+    validation_sampler = torch.utils.data.distributed.DistributedSampler(validation_dataset) if args.world_size > 1 else None
     validation_dataloader = torch.utils.data.DataLoader(dataset=validation_dataset,
                                                         sampler=validation_sampler,
                                                         **config['validation_dataloader'], 
@@ -75,8 +63,12 @@ def run(rank, config, args):
                                                         collate_fn=collate_fn)
         
     model = Model(**config['network_config']).to(args.device)
+    qat_config = config['qat'] if 'qat' in config else {}
+    qat_enabled = bool(qat_config.get('enabled', False))
+    if qat_enabled:
+        model.prepare_qat(backend=qat_config.get('backend', 'fbgemm'))
 
-    if args.use_cuda and args.world_size > 1:
+    if args.world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     optimizer = torch.optim.Adam(params=model.parameters(), **config['optimizer'])
@@ -93,7 +85,7 @@ def run(rank, config, args):
 
     trainer.train()
 
-    if args.use_cuda and args.world_size > 1:
+    if args.world_size > 1:
         dist.destroy_process_group()
 
 
@@ -121,6 +113,16 @@ class Trainer:
         self.save_checkpoint_interval = self.trainer_config['save_checkpoint_interval']
         self.clip_grad_norm_value = self.trainer_config['clip_grad_norm_value']
         self.resume = self.trainer_config['resume']
+        self.qat_config = config['qat'] if 'qat' in config else {}
+        self.qat_enabled = bool(self.qat_config.get('enabled', False))
+        self.qat_disable_observer_epoch = self.qat_config.get('disable_observer_epoch', self.epochs + 1)
+        self.qat_freeze_bn_epoch = self.qat_config.get('freeze_bn_epoch', self.epochs + 1)
+        self.qat_disable_observer_epoch = (
+            int(self.qat_disable_observer_epoch) if self.qat_disable_observer_epoch is not None else self.epochs + 1
+        )
+        self.qat_freeze_bn_epoch = (
+            int(self.qat_freeze_bn_epoch) if self.qat_freeze_bn_epoch is not None else self.epochs + 1
+        )
 
         if not self.resume:
             self.exp_path = self.trainer_config['exp_path'] + '_' + datetime.now().strftime("%Y-%m-%d-%Hh%Mm")
@@ -161,6 +163,21 @@ class Trainer:
 
     def _set_eval_mode(self):
         self.model.eval()
+
+    def _get_model(self):
+        return self.model.module if self.world_size > 1 else self.model
+
+    def _apply_qat_schedule(self, epoch):
+        if not self.qat_enabled:
+            return
+
+        model = self._get_model()
+        if epoch >= self.qat_disable_observer_epoch:
+            model.apply(torch.quantization.disable_observer)
+
+        freeze_bn_stats = getattr(getattr(torch.nn.intrinsic, 'qat', None), 'freeze_bn_stats', None)
+        if (freeze_bn_stats is not None) and (epoch >= self.qat_freeze_bn_epoch):
+            model.apply(freeze_bn_stats)
 
     def _save_checkpoint(self, epoch, score):
         model_dict = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
@@ -290,6 +307,7 @@ class Trainer:
                 self.train_sampler.set_epoch(epoch)
 
             self._set_train_mode()
+            self._apply_qat_schedule(epoch)
             self._train_epoch(epoch)
 
             self._set_eval_mode()
@@ -316,38 +334,14 @@ class Trainer:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-C', '--config', default='configs/cfg_train.yaml')
-    parser.add_argument(
-        '-D',
-        '--device',
-        default='cpu',
-        help='Comma-separated GPU indices (e.g. "0,1") or "cpu"'
-    )
-    parser.add_argument('--custom-gru', action='store_true',
-                        help='Use the handcrafted GRU implementation inside GTCRN.')
+    parser.add_argument('-D', '--device', default='0', help='The index of the available devices, e.g. 0,1,2,3')
 
     args = parser.parse_args()
-
-    device_arg = args.device.strip().lower()
-    if device_arg == 'cpu':
-        args.use_cuda = False
-        args.world_size = 1
-    else:
-        device_ids = [d.strip() for d in args.device.split(',') if d.strip()]
-        os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(device_ids)
-        args.use_cuda = torch.cuda.is_available() and len(device_ids) > 0
-        if not args.use_cuda:
-            print('CUDA requested but not available; falling back to CPU.')
-            args.device = 'cpu'
-            args.world_size = 1
-        else:
-            args.world_size = len(device_ids)
-
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+    args.world_size = len(args.device.split(','))
     config = OmegaConf.load(args.config)
-    if 'network_config' not in config:
-        config['network_config'] = {}
-    config['network_config']['use_custom_gru'] = bool(getattr(args, 'custom_gru', False))
     
-    if args.use_cuda and args.world_size > 1:
+    if args.world_size > 1:
         torch.multiprocessing.spawn(
             run, args=(config, args,), nprocs=args.world_size, join=True)
     else:
