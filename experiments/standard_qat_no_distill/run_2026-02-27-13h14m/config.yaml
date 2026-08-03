@@ -1,0 +1,76 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+DDP:
+  world_size: 1
+optimizer:
+  lr: 0.001
+scheduler:
+  kwargs:
+    warmup_steps: 25000
+    decay_until_step: 300000
+    max_lr: 0.001
+    min_lr: 1.0e-06
+  update_interval: step
+qat:
+  enabled: true
+  backend: qnnpack
+  per_channel_weights: true
+  quantize_deconv: true
+  dynamic_quantize_gru: false
+  log_observer_formats: true
+  log_clip_stats: true
+  clip_stats_batches_per_epoch: 20
+  clip_stats_topk: 8
+  disable_observer_epoch: 150
+  freeze_bn_epoch: 160
+distillation:
+  enabled: false
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+  freeze_gru_from_teacher: false
+  supervised_loss_weight: 1.0
+  output_loss_weight: 4000
+  feature_loss_weight: 1.0
+  feature_loss_type: mse
+FFT:
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1.0e-12
+  lamda_ri: 30
+  lamda_mag: 70
+train_dataset:
+  length_in_seconds: 10
+  num_data_tot: 72000
+  num_data_per_epoch: 10000
+  random_start_point: true
+  train: true
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+train_dataloader:
+  batch_size: 8
+  num_workers: 4
+  drop_last: true
+  pin_memory: true
+validation_dataset:
+  length_in_seconds: 10
+  random_start_point: false
+  train: false
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+validation_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+samplerate: 16000
+trainer:
+  epochs: 240
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 3.0
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/standard_qat_no_distill/run
+  resume: false
+  resume_datetime: 2024-12-31-14h28m

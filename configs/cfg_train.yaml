@@ -1,33 +1,75 @@
 network_config:
-  n_fft: 512
-  hop_len: 256
-  win_len: 512
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+  grouped_intra_rnn: False  # False -> single intra BiGRU (input=16, hidden=8)
+  tra_grouped: True  # True -> use grouped GRU in TRA blocks while keeping same I/O shapes
 
 DDP:
   world_size: 2
 
 optimizer:
-  lr: 0.001
+  lr: 5e-4
 
 scheduler:
   kwargs:
     warmup_steps: 25000
-    decay_until_step: 250000
-    max_lr: 1e-3
+    decay_until_step: 300000
+    max_lr: 5e-4
     min_lr: 1e-6
 
   update_interval: step  # [step, epoch]
 
 qat:
   enabled: True
-  backend: fbgemm  # [fbgemm, qnnpack]
-  disable_observer_epoch: 160
-  freeze_bn_epoch: 160
+  backend: qnnpack  # [fbgemm, qnnpack] (qnnpack required for per-channel deconv weights)
+  per_channel_weights: True  # force per-channel weight observers (uses fbgemm-style per-channel weights)
+  quantize_deconv: True  # enable QAT for ConvTranspose2d decoder layers
+  quantize_linear: False  # enable QAT/int8 conversion for model-internal linear layers (TRA/DPGRNN)
+  qat_gru: False  # enable dynamic-QAT fake-quant observers on nn.GRU during training
+  dynamic_quantize_gru: False  # apply quantize_dynamic to nn.GRU when converting to int8
+  static_quantize_gru: False  # static Q/DQ GRU conversion at int8 export (mutually exclusive with dynamic_quantize_gru)
+  log_observer_formats: False  # dump observer/fake-quant format summary at startup
+  log_clip_stats: False  # report saturation/clipping percentages per epoch
+  clip_stats_batches_per_epoch: 20  # set null to track all batches; lower keeps overhead small
+  clip_stats_topk: 8  # show top-k most-clipped fake-quant modules
+  float_warmup_epochs: 10  # keep fake quant OFF for first N epochs, while observers still collect stats
+  # Optional staged QAT:
+  # phase 1: full-float training      (epochs < qat_start_epoch)
+  # phase 2: QAT warmup/active        (from qat_start_epoch, with float_warmup_epochs applied)
+  # phase 3: constrained-scale QAT    (from scale_constraint_start_epoch, if set)
+  phase_schedule:
+    enabled: True
+    qat_start_epoch: 15
+    scale_constraint_start_epoch: 220
+  disable_observer_epoch: 230
+  freeze_bn_epoch: 240
+  # Optional: constrain QAT scales to fixed-point friendly values (Qm.n / shift-friendly).
+  # - mode: none  -> default PyTorch observer scales
+  # - mode: pow2  -> snap scale to 2^k (nearest/floor/ceil)
+  # - mode: fixed -> force scale to 2^-frac_bits (classic fixed-point step size)
+  # This is also reused by dynamic GRU conversion at inference time (weight packing qparams).
+  scale_constraint:
+    mode: pow2  # [none, pow2, fixed]
+    pow2_rounding: nearest  # [nearest, floor, ceil] (only used for mode=pow2)
+    frac_bits: null  # int (only used for mode=fixed)
+
+distillation:
+  enabled: False
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+  freeze_gru_from_teacher: False  # if True, copy all nn.GRU weights from teacher and keep them frozen
+  supervised_loss_weight: 1.0
+  # Output KD is waveform MSE, which is typically ~1e-3..1e-5 in our runs.
+  # Scale it up so it isn't dwarfed by supervised/feature losses (~1e0).
+  output_loss_weight: 1000
+  feature_hook_scope: edge  # [standard, edge]; edge = only encoder->GRU and GRU->decoder interfaces
+  feature_loss_weight: 0.8  # standard: Conv/ConvTranspose taps, edge: conv<->GRU boundary taps
+  feature_loss_type: cosine  # [mse, cosine]
 
 FFT:
-  n_fft: 512
-  hop_length: 256
-  win_length: 512
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
 
 loss:
   n_fft: ${FFT.n_fft}
@@ -42,8 +84,9 @@ train_dataset:
   length_in_seconds: 10
   num_data_tot: 72000  # 200 h
   num_data_per_epoch: 10000
-  random_start_point: False
+  random_start_point: True
   train: True
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
 
 train_dataloader: 
   batch_size: 8
@@ -55,6 +98,7 @@ validation_dataset:
   length_in_seconds: 10
   random_start_point: False
   train: False
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
 
 validation_dataloader:
   batch_size: 4
@@ -64,9 +108,9 @@ validation_dataloader:
 samplerate: 16000
 
 trainer:
-  epochs: 200
+  epochs: 250
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/standard_qat_dyn/run
   resume: False
   resume_datetime: 2024-12-31-14h28m

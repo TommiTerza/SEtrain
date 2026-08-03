@@ -1,0 +1,89 @@
+{
+  "meta": {
+    "config": "configs/cfg_infer.yaml",
+    "network_config": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml",
+    "checkpoint": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar",
+    "noisy_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy",
+    "clean_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean",
+    "backend": "qnnpack",
+    "quantize_deconv": true,
+    "per_channel_weights": true,
+    "quantize_gru": true,
+    "dynamic_quantize_gru": true,
+    "bit_widths": [
+      8
+    ],
+    "formats": [
+      {
+        "bits": 8,
+        "m": 2,
+        "n": 5,
+        "label": "Q2.5"
+      },
+      {
+        "bits": 8,
+        "m": 1,
+        "n": 6,
+        "label": "Q1.6"
+      },
+      {
+        "bits": 8,
+        "m": 0,
+        "n": 7,
+        "label": "Q0.7"
+      }
+    ],
+    "metrics": [
+      "pesq"
+    ],
+    "calib_count": 50,
+    "eval_count": 50,
+    "sample_rate": 16000,
+    "int8_eval_mode": "fake",
+    "timestamp": "2026-03-04T19:32:05.075431"
+  },
+  "results": [
+    {
+      "bits": 8,
+      "q_format": "Q2.5",
+      "m": 2,
+      "n": 5,
+      "eval_mode": "fake",
+      "calib_files": 50,
+      "calib_seconds": 9.126612663269043,
+      "num_eval_files": 50.0,
+      "audio_seconds": 118.94350000000003,
+      "wall_time_seconds": 10.34162425994873,
+      "rtf": 0.08694568648096557,
+      "pesq": 1.7656089282035827
+    },
+    {
+      "bits": 8,
+      "q_format": "Q1.6",
+      "m": 1,
+      "n": 6,
+      "eval_mode": "fake",
+      "calib_files": 50,
+      "calib_seconds": 6.81916880607605,
+      "num_eval_files": 50.0,
+      "audio_seconds": 118.94350000000003,
+      "wall_time_seconds": 9.967395067214966,
+      "rtf": 0.08379940952817903,
+      "pesq": 1.7661104702949524
+    },
+    {
+      "bits": 8,
+      "q_format": "Q0.7",
+      "m": 0,
+      "n": 7,
+      "eval_mode": "fake",
+      "calib_files": 50,
+      "calib_seconds": 7.09643030166626,
+      "num_eval_files": 50.0,
+      "audio_seconds": 118.94350000000003,
+      "wall_time_seconds": 10.310745477676392,
+      "rtf": 0.0866860776559996,
+      "pesq": 1.7661078238487244
+    }
+  ]
+}

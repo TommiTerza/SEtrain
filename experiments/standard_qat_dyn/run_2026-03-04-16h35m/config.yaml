@@ -1,0 +1,89 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+  grouped_intra_rnn: true
+DDP:
+  world_size: 1
+optimizer:
+  lr: 0.0005
+scheduler:
+  kwargs:
+    warmup_steps: 25000
+    decay_until_step: 300000
+    max_lr: 0.0005
+    min_lr: 1.0e-06
+  update_interval: step
+qat:
+  enabled: true
+  backend: qnnpack
+  per_channel_weights: true
+  quantize_deconv: true
+  quantize_linear: false
+  qat_gru: true
+  dynamic_quantize_gru: true
+  log_observer_formats: false
+  log_clip_stats: false
+  clip_stats_batches_per_epoch: 20
+  clip_stats_topk: 8
+  float_warmup_epochs: 10
+  phase_schedule:
+    enabled: true
+    qat_start_epoch: 15
+    scale_constraint_start_epoch: 220
+  disable_observer_epoch: 230
+  freeze_bn_epoch: 240
+  scale_constraint:
+    mode: pow2
+    pow2_rounding: nearest
+    frac_bits: null
+distillation:
+  enabled: false
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+  freeze_gru_from_teacher: false
+  supervised_loss_weight: 1.0
+  output_loss_weight: 1000
+  feature_hook_scope: edge
+  feature_loss_weight: 0.8
+  feature_loss_type: cosine
+FFT:
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1.0e-12
+  lamda_ri: 30
+  lamda_mag: 70
+train_dataset:
+  length_in_seconds: 10
+  num_data_tot: 72000
+  num_data_per_epoch: 10000
+  random_start_point: true
+  train: true
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+train_dataloader:
+  batch_size: 8
+  num_workers: 4
+  drop_last: true
+  pin_memory: true
+validation_dataset:
+  length_in_seconds: 10
+  random_start_point: false
+  train: false
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+validation_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+samplerate: 16000
+trainer:
+  epochs: 250
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 3.0
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/standard_qat_dyn/run
+  resume: true
+  resume_datetime: 2026-03-04-16h35m

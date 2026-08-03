@@ -1,0 +1,92 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+  grouped_intra_rnn: True  # False -> single intra BiGRU (input=16, hidden=8)
+
+DDP:
+  world_size: 2
+
+optimizer:
+  lr: 8.0e-4
+
+scheduler:
+  kwargs:
+    # Assumes ~1250 steps/epoch (batch=8, num_data_per_epoch=10000 on 1 GPU).
+    warmup_steps: 20000
+    decay_until_step: 325000
+    max_lr: 8.0e-4
+    min_lr: 5.0e-7
+
+  update_interval: step  # [step, epoch]
+
+qat:
+  enabled: True
+  backend: fbgemm  # [fbgemm, qnnpack]
+  quantize_deconv: True  # enable QAT for ConvTranspose2d decoder layers
+  qat_gru: False  # enable dynamic-QAT fake-quant observers on nn.GRU during training
+  dynamic_quantize_gru: False  # apply quantize_dynamic to nn.GRU when converting to int8
+  static_quantize_gru: False  # static Q/DQ GRU conversion at int8 export (mutually exclusive with dynamic_quantize_gru)
+  log_observer_formats: True
+  log_clip_stats: True
+  clip_stats_batches_per_epoch: 20
+  clip_stats_topk: 8
+  disable_observer_epoch: 145
+  freeze_bn_epoch: 160
+
+distillation:
+  enabled: True
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+  freeze_gru_from_teacher: False  # set True to keep student GRUs identical to teacher
+  supervised_loss_weight: 1.0
+  output_loss_weight: 1.5
+  feature_hook_scope: standard  # [standard, edge]; edge = only encoder->GRU and GRU->decoder interfaces
+  feature_loss_weight: 0.3  # standard: Conv/ConvTranspose taps, edge: conv<->GRU boundary taps
+  feature_loss_type: mse  # [mse, cosine]
+
+FFT:
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
+
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1e-12
+  lamda_ri: 30
+  lamda_mag: 70
+
+train_dataset: 
+  length_in_seconds: 10
+  num_data_tot: 72000  # 200 h
+  num_data_per_epoch: 10000
+  random_start_point: True
+  train: True
+
+train_dataloader: 
+  batch_size: 8
+  num_workers: 4
+  drop_last: True
+  pin_memory: True
+
+validation_dataset: 
+  length_in_seconds: 10
+  random_start_point: False
+  train: False
+
+validation_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: True
+
+samplerate: 16000
+
+trainer:
+  epochs: 260
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 2.0
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/
+  resume: False
+  resume_datetime: 2024-12-31-14h28m

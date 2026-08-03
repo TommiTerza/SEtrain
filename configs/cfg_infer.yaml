@@ -1,11 +1,11 @@
-test_dataset: 
-  noisy_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_noisy/
-  clean_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_clean/
+test_dataset:
+  noisy_dir: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy
+  clean_dir: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean
 
 network:
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn_2025-03-31-11h26m
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/standard_qat_no_distill/run_2026-03-04-09h56m
   config: ${network.exp_path}/config.yaml
-  ckpt_name: model_001
+  ckpt_name: best_model_230
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  use_int8: False
-  enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced
+  enh_folder: ${network.exp_path}/${network.ckpt_name}/plots
+  use_int8: True

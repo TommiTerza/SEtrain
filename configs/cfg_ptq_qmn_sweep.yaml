@@ -1,0 +1,45 @@
+ptq_qmn_sweep:
+  # Base infer config used to resolve network config/checkpoint + dataset paths.
+  config: configs/cfg_infer.yaml  # options: [path_to_cfg_infer_yaml]
+
+  # Optional direct overrides (null = use values from --config).
+  network_config: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml  # options: [path_to_network_config_yaml, null]
+  checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar  # options: [path_to_checkpoint_tar, null]
+  noisy_dir: null  # options: [path_to_noisy_wav_dir, null]
+  clean_dir: null  # options: [path_to_clean_wav_dir, null]
+  output_dir: null  # options: [path_to_output_dir, null]
+
+  # Sweep + evaluation controls.
+  sample_rate: 16000  # options: [16000, 8000, -1]
+  bit_widths: "8"  # options: ["8", "16", "8,16", "csv_of_ints>=2"]
+  frac_bits: "all"  # options: ["all", "csv_of_n_values"]
+  calib_count: 64  # options: [int>=1]
+  eval_count: 200  # options: [int>=1, -1]
+  metrics: "pesq"  # options: ["pesq", "estoi", "sisnr", "sdr", "csv_subset"]
+
+  # Quantization targets and int8 eval path.
+  ptq_target: gru  # options: [all, conv, gru] (linear is controlled independently)
+  include_baseline: true  # options: [true, false]
+  int8_eval_mode: convert  # options: [convert, fake]
+  backend: null  # options: [qnnpack, fbgemm, null]
+
+  # Sweep granularity.
+  sweep_mode: global  # options: [global, per-layer]
+  per_layer_scope: conv  # options: [all, conv, gru]
+  per_layer_base_frac_bits: null  # options: [int_in_0_to_bits_minus_1, null]
+  per_layer_max_groups: null  # options: [int>0, null]
+  per_layer_include_base: false  # options: [true, false]
+  list_layer_groups: false  # options: [true, false]
+  print_calib_offsets: false  # options: [true, false]
+  calib_offsets_scope: auto  # options: [auto, gru, fakequant]
+
+  # Runtime.
+  num_threads: 4  # options: [int>0, null]
+
+  # Optional QAT override toggles (null = keep value from network qat config).
+  quantize_deconv: true  # options: [true, false, null]
+  per_channel_weights: true  # options: [true, false, null]
+  quantize_linear: true  # options: [true, false, null] (independent from ptq_target)
+  quantize_gru: true  # options: [true, false, null]
+  dynamic_quantize_gru: false  # options: [true, false, null]
+  static_quantize_gru: true  # options: [true, false, null]

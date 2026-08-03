@@ -1,0 +1,49 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+optimizer:
+  lr: 0.001
+qat:
+  enabled: false
+  quantize_deconv: true
+  log_qat_wrapper_summary: true
+FFT:
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1.0e-12
+  lamda_ri: 30
+  lamda_mag: 70
+train_dataset:
+  length_in_seconds: 10
+  num_data_tot: 8
+  num_data_per_epoch: 8
+  random_start_point: true
+  train: true
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+train_dataloader:
+  batch_size: 8
+  drop_last: true
+validation_dataset:
+  length_in_seconds: 10
+  random_start_point: false
+  train: false
+  dataset_root: /home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k
+validation_dataloader:
+  batch_size: 4
+  drop_last: false
+samplerate: 16000
+trainer:
+  epochs: 1
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 3.0
+  compute_pesq: false
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/tf_qat_gtcrn
+  resume: false
+  resume_datetime: 2026-02-24-00h00m

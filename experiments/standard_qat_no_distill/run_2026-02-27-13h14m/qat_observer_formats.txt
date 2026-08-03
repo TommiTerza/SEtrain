@@ -1,0 +1,70 @@
+module_name	role	fake_quant	observer	dtype	qscheme	quant_min	quant_max	bits	channel_axis	scale_shape	scale_min	scale_max	scale_sample	zero_point_shape	zero_point_min	zero_point_max	zero_point_sample
+encoder.en_convs.0.conv.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.0.conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.0.quant.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.1.conv.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.1.conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.1.quant.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_conv1.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.depth_conv.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_conv2.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.2.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_conv1.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.depth_conv.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_conv2.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.3.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_conv1.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.depth_conv.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_conv2.weight_fake_quant	weight	FusedMovingAvgObsFakeQuantize	MovingAveragePerChannelMinMaxObserver	torch.qint8	torch.per_channel_symmetric	-128	127	8	0	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+encoder.en_convs.4.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.0.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.1.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.point_conv1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.point_quant1.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.depth_conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.point_quant2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.point_conv2.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.2.point_quant3.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.3.conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.3.quant.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.4.conv.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+decoder.de_convs.4.quant.activation_post_process	activation	FusedMovingAvgObsFakeQuantize	MovingAverageMinMaxObserver	torch.quint8	torch.per_tensor_affine	0	255	8	None	1	1.0	1.0	[1]	1	0	0	[0]
+
+# ConvTranspose2d weight qconfig summary
+module_name	groups	in_channels	out_channels	weight_qscheme	weight_channel_axis
+decoder.de_convs.0.point_conv1	1	24	16	torch.per_channel_symmetric	1
+decoder.de_convs.0.depth_conv	16	16	16	torch.per_channel_symmetric	0
+decoder.de_convs.0.point_conv2	1	16	8	torch.per_channel_symmetric	1
+decoder.de_convs.1.point_conv1	1	24	16	torch.per_channel_symmetric	1
+decoder.de_convs.1.depth_conv	16	16	16	torch.per_channel_symmetric	0
+decoder.de_convs.1.point_conv2	1	16	8	torch.per_channel_symmetric	1
+decoder.de_convs.2.point_conv1	1	24	16	torch.per_channel_symmetric	1
+decoder.de_convs.2.depth_conv	16	16	16	torch.per_channel_symmetric	0
+decoder.de_convs.2.point_conv2	1	16	8	torch.per_channel_symmetric	1
+decoder.de_convs.3.conv	2	16	16	torch.per_channel_symmetric	0
+decoder.de_convs.4.conv	1	16	2	torch.per_channel_symmetric	1

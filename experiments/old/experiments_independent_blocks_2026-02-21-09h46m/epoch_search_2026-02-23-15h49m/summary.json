@@ -1,0 +1,187 @@
+{
+  "batch_size": 8,
+  "blocks": [
+    "encoder.en_convs.0",
+    "encoder.en_convs.1",
+    "encoder.en_convs.2",
+    "encoder.en_convs.3",
+    "encoder.en_convs.4",
+    "decoder.de_convs.0",
+    "decoder.de_convs.1",
+    "decoder.de_convs.2",
+    "decoder.de_convs.3",
+    "decoder.de_convs.4"
+  ],
+  "device": "cpu",
+  "experiment_root": "/home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments_independent_blocks_2026-02-21-09h46m",
+  "final_score": 2.082271598279476,
+  "max_passes": 2,
+  "num_evaluated_combinations": 381,
+  "objective_mode": "int8",
+  "output_checkpoint": "/home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments_independent_blocks_2026-02-21-09h46m/epoch_search_2026-02-23-15h49m/assembled_student_blockwise_pesq_search.tar",
+  "selected_epochs": {
+    "decoder.de_convs.0": 28,
+    "decoder.de_convs.1": 8,
+    "decoder.de_convs.2": 40,
+    "decoder.de_convs.3": 8,
+    "decoder.de_convs.4": 64,
+    "encoder.en_convs.0": 16,
+    "encoder.en_convs.1": 24,
+    "encoder.en_convs.2": 32,
+    "encoder.en_convs.3": 80,
+    "encoder.en_convs.4": 64
+  },
+  "subset_size": 96,
+  "top_combinations": [
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 64,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.082271598279476
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 12,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.0817274351914725
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 52,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.0814028854171434
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 60,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.0813796892762184
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 68,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.081365082412958
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 20,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.081027848025163
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 76,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.0809813862045607
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 72,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.0807580649852753
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 16,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.080681590984265
+    },
+    {
+      "epochs": {
+        "decoder.de_convs.0": 28,
+        "decoder.de_convs.1": 8,
+        "decoder.de_convs.2": 40,
+        "decoder.de_convs.3": 8,
+        "decoder.de_convs.4": 4,
+        "encoder.en_convs.0": 16,
+        "encoder.en_convs.1": 24,
+        "encoder.en_convs.2": 32,
+        "encoder.en_convs.3": 80,
+        "encoder.en_convs.4": 64
+      },
+      "score": 2.08059723675251
+    }
+  ]
+}

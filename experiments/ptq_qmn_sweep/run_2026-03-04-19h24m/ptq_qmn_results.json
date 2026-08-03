@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "config": "configs/cfg_infer.yaml",
+    "network_config": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml",
+    "checkpoint": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar",
+    "noisy_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy",
+    "clean_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean",
+    "backend": "qnnpack",
+    "quantize_deconv": true,
+    "per_channel_weights": true,
+    "quantize_gru": true,
+    "dynamic_quantize_gru": true,
+    "bit_widths": [
+      8
+    ],
+    "formats": [
+      {
+        "bits": 8,
+        "m": 5,
+        "n": 2,
+        "label": "Q5.2"
+      },
+      {
+        "bits": 8,
+        "m": 4,
+        "n": 3,
+        "label": "Q4.3"
+      },
+      {
+        "bits": 8,
+        "m": 3,
+        "n": 4,
+        "label": "Q3.4"
+      },
+      {
+        "bits": 8,
+        "m": 2,
+        "n": 5,
+        "label": "Q2.5"
+      }
+    ],
+    "metrics": [
+      "pesq"
+    ],
+    "calib_count": 16,
+    "eval_count": 50,
+    "sample_rate": 16000,
+    "int8_eval_mode": "fake",
+    "timestamp": "2026-03-04T19:25:12.703197"
+  },
+  "results": [
+    {
+      "bits": 8,
+      "q_format": "Q5.2",
+      "m": 5,
+      "n": 2,
+      "eval_mode": "fake",
+      "calib_files": 16,
+      "calib_seconds": 4.7446653842926025,
+      "num_eval_files": 50.0,
+      "audio_seconds": 116.98856250000004,
+      "wall_time_seconds": 10.923792600631714,
+      "rtf": 0.09337487671610385,
+      "pesq": 1.1240868830680848
+    },
+    {
+      "bits": 8,
+      "q_format": "Q4.3",
+      "m": 4,
+      "n": 3,
+      "eval_mode": "fake",
+      "calib_files": 16,
+      "calib_seconds": 2.312018871307373,
+      "num_eval_files": 50.0,
+      "audio_seconds": 116.98856250000004,
+      "wall_time_seconds": 10.1015944480896,
+      "rtf": 0.08634685504482198,
+      "pesq": 1.3051336908340454
+    },
+    {
+      "bits": 8,
+      "q_format": "Q3.4",
+      "m": 3,
+      "n": 4,
+      "eval_mode": "fake",
+      "calib_files": 16,
+      "calib_seconds": 2.258152723312378,
+      "num_eval_files": 50.0,
+      "audio_seconds": 116.98856250000004,
+      "wall_time_seconds": 9.901350498199463,
+      "rtf": 0.08463520096846612,
+      "pesq": 1.2368534421920776
+    },
+    {
+      "bits": 8,
+      "q_format": "Q2.5",
+      "m": 2,
+      "n": 5,
+      "eval_mode": "fake",
+      "calib_files": 16,
+      "calib_seconds": 2.2879581451416016,
+      "num_eval_files": 50.0,
+      "audio_seconds": 116.98856250000004,
+      "wall_time_seconds": 9.81389832496643,
+      "rtf": 0.0838876734207793,
+      "pesq": 1.7523034405708313
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+  grouped_intra_rnn: True  # False -> single intra BiGRU (input=16, hidden=8)
+
+optimizer:
+  lr: 2.5e-4
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.0
+
+scheduler:
+  kwargs:
+    # For longer runs (~80 epochs/block, ~1250 steps/epoch), keep LR active much longer.
+    warmup_steps: 5000
+    decay_until_step: 90000
+    max_lr: 2.5e-4
+    min_lr: 5.0e-6
+
+  update_interval: step  # [step, epoch]
+
+qat:
+  enabled: True
+  backend: fbgemm  # [fbgemm, qnnpack]
+  quantize_deconv: True
+  qat_gru: False  # enable dynamic-QAT fake-quant observers on nn.GRU during training
+  dynamic_quantize_gru: False  # apply quantize_dynamic to nn.GRU when converting to int8
+  static_quantize_gru: False  # static Q/DQ GRU conversion at int8 export (mutually exclusive with dynamic_quantize_gru)
+  log_observer_formats: True
+  log_clip_stats: True
+  clip_stats_batches_per_epoch: 20
+  clip_stats_topk: 8
+  # Delay observer/BN freezing for longer 80-epoch block-wise runs.
+  disable_observer_epoch: 55
+  freeze_bn_epoch: 65
+
+distillation:
+  enabled: True
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+
+# Used by train_blockwise_distill.py only.
+blockwise_distillation:
+  enabled: True
+  epochs_per_block: 80
+  loss: mse  # [mse, l1, smooth_l1]
+  train_encoder: True
+  train_decoder: True
+  blocks: all  # or explicit list, e.g. [encoder.en_convs.0, decoder.de_convs.4]
+  # If True, capture block inputs from a progressively updated student context model.
+  progressive_student_input: False
+  # Warm-start from your latest assembled block-wise student.
+  student_checkpoint: ''
+  max_steps_per_epoch: -1  # set > 0 for quick debugging
+  max_validation_steps_per_epoch: -1  # set > 0 for quick validation debugging
+  save_checkpoint_interval: 2
+  clip_grad_norm_value: 3.0
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/blockwise_distillation/
+
+train_dataset:
+  length_in_seconds: 10
+  num_data_tot: 72000
+  # Lower than end-to-end to keep per-block runtime manageable.
+  num_data_per_epoch: 10000
+  random_start_point: True
+  train: True
+
+train_dataloader:
+  batch_size: 8
+  num_workers: 4
+  drop_last: True
+  pin_memory: True
+
+validation_dataset:
+  length_in_seconds: 10
+  random_start_point: False
+  train: False
+
+validation_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: True
+
+samplerate: 16000

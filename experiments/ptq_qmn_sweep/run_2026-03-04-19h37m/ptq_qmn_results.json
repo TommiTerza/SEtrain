@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "config": "configs/cfg_infer.yaml",
+    "network_config": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml",
+    "checkpoint": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar",
+    "noisy_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy",
+    "clean_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean",
+    "backend": "qnnpack",
+    "quantize_deconv": true,
+    "per_channel_weights": true,
+    "quantize_gru": true,
+    "dynamic_quantize_gru": true,
+    "sweep_mode": "global",
+    "bit_widths": [
+      16
+    ],
+    "frac_bits_by_bit": {
+      "16": [
+        5,
+        6,
+        7
+      ]
+    },
+    "formats": [
+      {
+        "bits": 16,
+        "m": 10,
+        "n": 5,
+        "label": "Q10.5"
+      },
+      {
+        "bits": 16,
+        "m": 9,
+        "n": 6,
+        "label": "Q9.6"
+      },
+      {
+        "bits": 16,
+        "m": 8,
+        "n": 7,
+        "label": "Q8.7"
+      }
+    ],
+    "per_layer_groups_by_bits": {},
+    "per_layer_scope": "all",
+    "per_layer_base_frac_bits": null,
+    "per_layer_max_groups": null,
+    "per_layer_include_base": false,
+    "metrics": [
+      "pesq"
+    ],
+    "calib_count": 100,
+    "eval_count": 50,
+    "sample_rate": 16000,
+    "int8_eval_mode": "convert",
+    "timestamp": "2026-03-04T19:39:00.473158"
+  },
+  "results": [
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q10.5",
+      "base_q_format": "Q10.5",
+      "m": 10,
+      "n": 5,
+      "base_n": 5,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 16.074519634246826,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.950920104980469,
+      "rtf": 0.08297636730516819,
+      "pesq": 2.4108360505104063
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q9.6",
+      "base_q_format": "Q9.6",
+      "m": 9,
+      "n": 6,
+      "base_n": 6,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.79718804359436,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.645792245864868,
+      "rtf": 0.0804320396403984,
+      "pesq": 2.41400030374527
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q8.7",
+      "base_q_format": "Q8.7",
+      "m": 8,
+      "n": 7,
+      "base_n": 7,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.344907522201538,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.697971105575562,
+      "rtf": 0.08086713631319274,
+      "pesq": 2.4550392913818357
+    }
+  ]
+}

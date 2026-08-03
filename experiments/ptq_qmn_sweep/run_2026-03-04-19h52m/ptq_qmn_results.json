@@ -1,0 +1,160 @@
+{
+  "meta": {
+    "config": "configs/cfg_infer.yaml",
+    "network_config": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml",
+    "checkpoint": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar",
+    "noisy_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy",
+    "clean_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean",
+    "backend": "qnnpack",
+    "ptq_target": "gru",
+    "quantize_conv": false,
+    "quantize_deconv": false,
+    "per_channel_weights": true,
+    "quantize_gru": true,
+    "dynamic_quantize_gru": true,
+    "sweep_mode": "global",
+    "bit_widths": [
+      8
+    ],
+    "frac_bits_by_bit": {
+      "8": [
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    "formats": [
+      {
+        "bits": 8,
+        "m": 3,
+        "n": 4,
+        "label": "Q3.4"
+      },
+      {
+        "bits": 8,
+        "m": 2,
+        "n": 5,
+        "label": "Q2.5"
+      },
+      {
+        "bits": 8,
+        "m": 1,
+        "n": 6,
+        "label": "Q1.6"
+      },
+      {
+        "bits": 8,
+        "m": 0,
+        "n": 7,
+        "label": "Q0.7"
+      }
+    ],
+    "per_layer_groups_by_bits": {},
+    "per_layer_scope": "all",
+    "per_layer_base_frac_bits": null,
+    "per_layer_max_groups": null,
+    "per_layer_include_base": false,
+    "metrics": [
+      "pesq"
+    ],
+    "calib_count": 100,
+    "eval_count": 50,
+    "include_baseline": true,
+    "sample_rate": 16000,
+    "int8_eval_mode": "convert",
+    "timestamp": "2026-03-04T19:54:27.623379"
+  },
+  "results": [
+    {
+      "sweep_mode": "baseline",
+      "bits": "float",
+      "q_format": "FP32",
+      "base_q_format": "FP32",
+      "m": "",
+      "n": "",
+      "base_n": "",
+      "target_group": "__none__",
+      "eval_mode": "float",
+      "calib_files": 0,
+      "calib_seconds": 0.0,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 11.790164947509766,
+      "rtf": 0.09831302502202227,
+      "pesq": 2.4617019748687743
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 8,
+      "q_format": "Q3.4",
+      "base_q_format": "Q3.4",
+      "m": 3,
+      "n": 4,
+      "base_n": 4,
+      "target_group": "__all__",
+      "eval_mode": "convert",
+      "calib_files": 100,
+      "calib_seconds": 12.071257591247559,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.250500679016113,
+      "rtf": 0.08547443858766529,
+      "pesq": 2.4966032218933107
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 8,
+      "q_format": "Q2.5",
+      "base_q_format": "Q2.5",
+      "m": 2,
+      "n": 5,
+      "base_n": 5,
+      "target_group": "__all__",
+      "eval_mode": "convert",
+      "calib_files": 100,
+      "calib_seconds": 11.081110715866089,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.922754764556885,
+      "rtf": 0.08274150885915446,
+      "pesq": 2.4273593497276305
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 8,
+      "q_format": "Q1.6",
+      "base_q_format": "Q1.6",
+      "m": 1,
+      "n": 6,
+      "base_n": 6,
+      "target_group": "__all__",
+      "eval_mode": "convert",
+      "calib_files": 100,
+      "calib_seconds": 11.079680919647217,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.007000207901001,
+      "rtf": 0.08344399473754167,
+      "pesq": 2.4675783133506775
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 8,
+      "q_format": "Q0.7",
+      "base_q_format": "Q0.7",
+      "m": 0,
+      "n": 7,
+      "base_n": 7,
+      "target_group": "__all__",
+      "eval_mode": "convert",
+      "calib_files": 100,
+      "calib_seconds": 11.548348903656006,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.4080491065979,
+      "rtf": 0.08678816596739122,
+      "pesq": 2.5198008680343627
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+name: setrain
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  # Avoid "CXXABI_1.3.9 not found" by ensuring a recent C++ runtime in the env.
+  - conda-forge::libstdcxx-ng>=12
+  - conda-forge::libgcc-ng>=12
+  - pytorch>=2.0
+  - pytorch-cuda=12.1
+  - pip:
+      - -r requirements.txt

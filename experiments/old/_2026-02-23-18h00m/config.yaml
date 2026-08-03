@@ -1,0 +1,67 @@
+network_config:
+  n_fft: 256
+  hop_len: 128
+  win_len: 256
+DDP:
+  world_size: 1
+optimizer:
+  lr: 0.0008
+scheduler:
+  kwargs:
+    warmup_steps: 20000
+    decay_until_step: 325000
+    max_lr: 0.0008
+    min_lr: 5.0e-07
+  update_interval: step
+qat:
+  enabled: true
+  backend: fbgemm
+  quantize_deconv: true
+  disable_observer_epoch: 145
+  freeze_bn_epoch: 160
+distillation:
+  enabled: true
+  teacher_checkpoint: /home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar
+  freeze_gru_from_teacher: false
+  supervised_loss_weight: 1.0
+  output_loss_weight: 1.5
+  feature_loss_weight: 0.3
+FFT:
+  n_fft: 256
+  hop_length: 128
+  win_length: 256
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1.0e-12
+  lamda_ri: 30
+  lamda_mag: 70
+train_dataset:
+  length_in_seconds: 10
+  num_data_tot: 72000
+  num_data_per_epoch: 10000
+  random_start_point: true
+  train: true
+train_dataloader:
+  batch_size: 8
+  num_workers: 4
+  drop_last: true
+  pin_memory: true
+validation_dataset:
+  length_in_seconds: 10
+  random_start_point: false
+  train: false
+validation_dataloader:
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+samplerate: 16000
+trainer:
+  epochs: 260
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 2.0
+  exp_path: /home/terzano/Desktop/NNs/gtcrn-qat/SEtrain/experiments/
+  resume: false
+  resume_datetime: 2024-12-31-14h28m

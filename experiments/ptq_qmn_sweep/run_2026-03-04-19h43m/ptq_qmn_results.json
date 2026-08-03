@@ -1,0 +1,216 @@
+{
+  "meta": {
+    "config": "configs/cfg_infer.yaml",
+    "network_config": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/config.yaml",
+    "checkpoint": "/home/terzano/Desktop/NNs/SEtrain/experiments/gtcrn_2025-10-01-16h05m/checkpoints/best_model_111.tar",
+    "noisy_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/noisy",
+    "clean_dir": "/home/terzano/Desktop/NNs/SEtrain/data/voicebank-demand-16k/test/clean",
+    "backend": "qnnpack",
+    "ptq_target": "all",
+    "quantize_conv": true,
+    "quantize_deconv": true,
+    "per_channel_weights": true,
+    "quantize_gru": true,
+    "dynamic_quantize_gru": true,
+    "sweep_mode": "global",
+    "bit_widths": [
+      16
+    ],
+    "frac_bits_by_bit": {
+      "16": [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ]
+    },
+    "formats": [
+      {
+        "bits": 16,
+        "m": 8,
+        "n": 7,
+        "label": "Q8.7"
+      },
+      {
+        "bits": 16,
+        "m": 7,
+        "n": 8,
+        "label": "Q7.8"
+      },
+      {
+        "bits": 16,
+        "m": 6,
+        "n": 9,
+        "label": "Q6.9"
+      },
+      {
+        "bits": 16,
+        "m": 5,
+        "n": 10,
+        "label": "Q5.10"
+      },
+      {
+        "bits": 16,
+        "m": 4,
+        "n": 11,
+        "label": "Q4.11"
+      },
+      {
+        "bits": 16,
+        "m": 3,
+        "n": 12,
+        "label": "Q3.12"
+      },
+      {
+        "bits": 16,
+        "m": 2,
+        "n": 13,
+        "label": "Q2.13"
+      }
+    ],
+    "per_layer_groups_by_bits": {},
+    "per_layer_scope": "all",
+    "per_layer_base_frac_bits": null,
+    "per_layer_max_groups": null,
+    "per_layer_include_base": false,
+    "metrics": [
+      "pesq"
+    ],
+    "calib_count": 100,
+    "eval_count": 50,
+    "sample_rate": 16000,
+    "int8_eval_mode": "convert",
+    "timestamp": "2026-03-04T19:45:57.686650"
+  },
+  "results": [
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q8.7",
+      "base_q_format": "Q8.7",
+      "m": 8,
+      "n": 7,
+      "base_n": 7,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 15.662482738494873,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.130501508712769,
+      "rtf": 0.08447381802932896,
+      "pesq": 2.4550392913818357
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q7.8",
+      "base_q_format": "Q7.8",
+      "m": 7,
+      "n": 8,
+      "base_n": 8,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.752369403839111,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.718915700912476,
+      "rtf": 0.0810417841263999,
+      "pesq": 2.464371123313904
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q6.9",
+      "base_q_format": "Q6.9",
+      "m": 6,
+      "n": 9,
+      "base_n": 9,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.607757091522217,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.568052291870117,
+      "rtf": 0.07978380019028697,
+      "pesq": 2.4590607714653014
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q5.10",
+      "base_q_format": "Q5.10",
+      "m": 5,
+      "n": 10,
+      "base_n": 10,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.40327787399292,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.503511190414429,
+      "rtf": 0.07924562019445051,
+      "pesq": 2.4596039986610414
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q4.11",
+      "base_q_format": "Q4.11",
+      "m": 4,
+      "n": 11,
+      "base_n": 11,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 14.036641836166382,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.89012336730957,
+      "rtf": 0.09080797222683032,
+      "pesq": 1.7502323389053345
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q3.12",
+      "base_q_format": "Q3.12",
+      "m": 3,
+      "n": 12,
+      "base_n": 12,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.512723684310913,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 10.244410276412964,
+      "rtf": 0.08542365338608555,
+      "pesq": 1.2468765568733216
+    },
+    {
+      "sweep_mode": "global",
+      "bits": 16,
+      "q_format": "Q2.13",
+      "base_q_format": "Q2.13",
+      "m": 2,
+      "n": 13,
+      "base_n": 13,
+      "target_group": "__all__",
+      "eval_mode": "fake",
+      "calib_files": 100,
+      "calib_seconds": 12.316490173339844,
+      "num_eval_files": 50.0,
+      "audio_seconds": 119.92475,
+      "wall_time_seconds": 9.926300525665283,
+      "rtf": 0.08277107540908181,
+      "pesq": 1.72708172082901
+    }
+  ]
+}
